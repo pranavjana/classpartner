@@ -1,0 +1,36 @@
+{
+  "name": "classroom-assistant",
+  "productName": "Classroom Assistant",
+  "version": "1.0.0",
+  "description": "Transparent overlay window for classroom transcription and assistance",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish",
+    "lint": "echo \"No linting configured\""
+  },
+  "keywords": [],
+  "author": {
+    "name": "Pranav Janakiraman",
+    "email": "pranavjana2003@gmail.com"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "electron-reloader": "^1.2.3",
+    "electron-squirrel-startup": "^1.0.1",
+    "electron-store": "^8.1.0"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.8.3",
+    "@electron-forge/maker-deb": "^7.8.3",
+    "@electron-forge/maker-rpm": "^7.8.3",
+    "@electron-forge/maker-squirrel": "^7.8.3",
+    "@electron-forge/maker-zip": "^7.8.3",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.8.3",
+    "@electron-forge/plugin-fuses": "^7.8.3",
+    "@electron/fuses": "^1.8.0",
+    "electron": "38.0.0"
+  }
+}

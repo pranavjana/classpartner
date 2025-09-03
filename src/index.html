@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Classroom Assistant</title>
+    <link rel="stylesheet" href="index.css" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';">
+  </head>
+  <body>
+    <div class="overlay-container">
+      <!-- Header bar with drag handle and controls -->
+      <div class="header-bar" id="header-bar">
+        <div class="drag-handle">
+          <div class="drag-icon">≡</div>
+          <span class="app-title">Classroom Assistant</span>
+        </div>
+        <div class="window-controls">
+          <button class="control-btn settings-btn" id="settings-btn" title="Settings">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M6 7.5C6.82843 7.5 7.5 6.82843 7.5 6C7.5 5.17157 6.82843 4.5 6 4.5C5.17157 4.5 4.5 5.17157 4.5 6C4.5 6.82843 5.17157 7.5 6 7.5Z" fill="currentColor"/>
+              <path d="M10.5 6C10.5 6.3 10.47 6.59 10.42 6.87L11.54 7.63C11.63 7.69 11.66 7.8 11.6 7.9L10.6 9.6C10.54 9.7 10.43 9.73 10.33 9.7L9.04 9.16C8.8 9.35 8.54 9.51 8.26 9.63L8.07 11.03C8.06 11.14 7.96 11.22 7.85 11.22H5.85C5.74 11.22 5.64 11.14 5.63 11.03L5.44 9.63C5.16 9.51 4.9 9.35 4.66 9.16L3.37 9.7C3.27 9.73 3.16 9.7 3.1 9.6L2.1 7.9C2.04 7.8 2.07 7.69 2.16 7.63L3.28 6.87C3.23 6.59 3.2 6.3 3.2 6C3.2 5.7 3.23 5.41 3.28 5.13L2.16 4.37C2.07 4.31 2.04 4.2 2.1 4.1L3.1 2.4C3.16 2.3 3.27 2.27 3.37 2.3L4.66 2.84C4.9 2.65 5.16 2.49 5.44 2.37L5.63 0.97C5.64 0.86 5.74 0.78 5.85 0.78H7.85C7.96 0.78 8.06 0.86 8.07 0.97L8.26 2.37C8.54 2.49 8.8 2.65 9.04 2.84L10.33 2.3C10.43 2.27 10.54 2.3 10.6 2.4L11.6 4.1C11.66 4.2 11.63 4.31 11.54 4.37L10.42 5.13C10.47 5.41 10.5 5.7 10.5 6Z" fill="currentColor"/>
+            </svg>
+          </button>
+          <button class="control-btn minimize-btn" id="minimize-btn" title="Minimize">
+            <svg width="10" height="2" viewBox="0 0 10 2" fill="none">
+              <path d="M0 1H10" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          </button>
+          <button class="control-btn close-btn" id="close-btn" title="Close">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Main content area for transcriptions -->
+      <div class="content-area">
+        <div class="transcript-display" id="transcript-display">
+          <div class="placeholder-text">
+            Ready for transcription...
+            <br>
+            <small>Press Ctrl+Shift+T to toggle visibility</small>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Context menu -->
+    <div class="context-menu" id="context-menu">
+      <div class="context-menu-item" id="toggle-always-on-top">
+        <span>Always on Top</span>
+        <span class="check-mark" id="always-on-top-check">✓</span>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
