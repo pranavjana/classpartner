@@ -1,6 +1,9 @@
 const { app, BrowserWindow, ipcMain, screen, globalShortcut } = require('electron');
 const path = require('node:path');
 const Store = require('electron-store');
+require('dotenv').config();
+
+const DeepgramService = require('./services/deepgram');
 
 const store = new Store();
 
@@ -19,6 +22,7 @@ if (require('electron-squirrel-startup')) {
 }
 
 let mainWindow;
+let deepgramService = null;
 
 // Register IPC handlers once (outside createWindow to avoid duplicate registration)
 function setupIpcHandlers() {
@@ -69,15 +73,122 @@ function setupIpcHandlers() {
     return store.store;
   });
 
-  // Placeholder handlers for Phase 2 transcription features
-  ipcMain.handle('start-transcription', () => {
-    console.log('Start transcription (Phase 2 feature)');
-    return { success: true, message: 'Transcription will be available in Phase 2' };
+  // Transcription handlers
+  ipcMain.handle('start-transcription', async () => {
+    try {
+      const apiKey = process.env.DEEPGRAM_API_KEY;
+      
+      if (!apiKey) {
+        return { 
+          success: false, 
+          error: 'Deepgram API key not found. Please add DEEPGRAM_API_KEY to your .env file.' 
+        };
+      }
+
+      // Initialize Deepgram service if not already done
+      if (!deepgramService) {
+        deepgramService = new DeepgramService(apiKey);
+        setupDeepgramEventHandlers();
+      }
+
+      // Connect to Deepgram
+      await deepgramService.connect();
+      
+      console.log('Transcription started successfully');
+      return { success: true, message: 'Transcription started' };
+      
+    } catch (error) {
+      console.error('Failed to start transcription:', error);
+      return { 
+        success: false, 
+        error: `Failed to start transcription: ${error.message}` 
+      };
+    }
   });
 
   ipcMain.handle('stop-transcription', () => {
-    console.log('Stop transcription (Phase 2 feature)');
-    return { success: true, message: 'Transcription will be available in Phase 2' };
+    try {
+      if (deepgramService) {
+        deepgramService.disconnect();
+      }
+      
+      console.log('Transcription stopped');
+      return { success: true, message: 'Transcription stopped' };
+      
+    } catch (error) {
+      console.error('Failed to stop transcription:', error);
+      return { 
+        success: false, 
+        error: `Failed to stop transcription: ${error.message}` 
+      };
+    }
+  });
+
+  // Send audio data to Deepgram
+  ipcMain.handle('send-audio-data', async (event, audioArray) => {
+    try {
+      if (deepgramService && deepgramService.isConnectedToDeepgram()) {
+        // Convert the array back to buffer for Deepgram
+        const buffer = Buffer.from(audioArray);
+        console.log('Sending audio buffer to Deepgram, size:', buffer.length);
+        const success = deepgramService.sendAudio(buffer);
+        return { success };
+      }
+      return { success: false, error: 'Not connected to Deepgram' };
+    } catch (error) {
+      console.error('Failed to send audio data:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Get transcription service status
+  ipcMain.handle('get-transcription-status', () => {
+    if (deepgramService) {
+      return {
+        connected: deepgramService.isConnectedToDeepgram(),
+        status: deepgramService.getConnectionStatus()
+      };
+    }
+    return { connected: false, status: 'disconnected' };
+  });
+}
+
+// Set up Deepgram service event handlers
+function setupDeepgramEventHandlers() {
+  if (!deepgramService || !mainWindow) return;
+
+  deepgramService.on('transcription', (data) => {
+    console.log('Sending transcription to renderer:', data);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('transcription-data', data);
+    }
+  });
+
+  deepgramService.on('status', (status) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('transcription-status', status);
+    }
+  });
+
+  deepgramService.on('error', (error) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('transcription-error', {
+        message: error.message,
+        type: 'deepgram-error'
+      });
+    }
+  });
+
+  deepgramService.on('connected', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('transcription-connected');
+    }
+  });
+
+  deepgramService.on('disconnected', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('transcription-disconnected');
+    }
   });
 }
 
@@ -170,6 +281,12 @@ app.on('window-all-closed', () => {
 // Unregister shortcuts when app is about to quit
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  
+  // Clean up Deepgram service
+  if (deepgramService) {
+    deepgramService.destroy();
+    deepgramService = null;
+  }
 });
 
 // In this file you can include the rest of your app's specific main process
