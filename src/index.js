@@ -46,10 +46,19 @@ function setupIpcHandlers() {
     return mainWindow ? mainWindow.isAlwaysOnTop() : false;
   });
 
+  ipcMain.handle('get-window-bounds', () => {
+    return mainWindow ? mainWindow.getBounds() : null;
+  });
+
   ipcMain.on('window-move', (event, deltaX, deltaY) => {
     if (!mainWindow) return;
     const [currentX, currentY] = mainWindow.getPosition();
     mainWindow.setPosition(currentX + deltaX, currentY + deltaY);
+  });
+
+  ipcMain.on('window-resize', (event, width, height) => {
+    if (!mainWindow) return;
+    mainWindow.setSize(Math.round(width), Math.round(height));
   });
 
   // Development utilities
@@ -124,13 +133,12 @@ function setupIpcHandlers() {
     }
   });
 
-  // Send audio data to Deepgram
+  // Send audio data to Deepgram (optimized)
   ipcMain.handle('send-audio-data', async (event, audioArray) => {
     try {
       if (deepgramService && deepgramService.isConnectedToDeepgram()) {
-        // Convert the array back to buffer for Deepgram
-        const buffer = Buffer.from(audioArray);
-        console.log('Sending audio buffer to Deepgram, size:', buffer.length);
+        // Optimized buffer conversion - avoid unnecessary array operations
+        const buffer = new Uint8Array(audioArray);
         const success = deepgramService.sendAudio(buffer);
         return { success };
       }
@@ -190,6 +198,12 @@ function setupDeepgramEventHandlers() {
       mainWindow.webContents.send('transcription-disconnected');
     }
   });
+
+  deepgramService.on('quality-change', (qualityData) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('connection-quality-change', qualityData);
+    }
+  });
 }
 
 const createWindow = () => {
@@ -201,7 +215,7 @@ const createWindow = () => {
     x: screenWidth - 420,
     y: 20,
     width: 400,
-    height: 150
+    height: 1000
   });
 
   // Create the browser window.
@@ -210,7 +224,7 @@ const createWindow = () => {
     frame: false,
     transparent: true,
     alwaysOnTop: true,
-    resizable: false,
+    resizable: true,
     skipTaskbar: true,
     webPreferences: {
       nodeIntegration: false,

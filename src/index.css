@@ -16,10 +16,40 @@ body {
   -webkit-app-region: no-drag;
 }
 
+/* Resize handles for frameless window */
+.resize-handle {
+  position: absolute;
+  -webkit-app-region: no-drag;
+}
+
+.resize-handle.bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.resize-handle.right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.resize-handle.bottom-right {
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nw-resize;
+}
+
 /* Main overlay container */
 .overlay-container {
-  width: 400px;
-  height: 150px;
+  width: 100vw;
+  height: 100vh;
   background: rgba(0, 0, 0, 0.7);
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
@@ -293,7 +323,7 @@ body {
   height: 8px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.7);
-  transition: all 0.2s ease;
+  transition: all 0.1s ease, transform 0.05s ease; /* Faster response for scale */
 }
 
 .record-btn.recording .record-icon {
@@ -386,29 +416,25 @@ body {
   line-height: 1.5;
 }
 
-.transcript-line {
-  margin-bottom: 8px;
-  padding: 4px 0;
-  border-left: 2px solid transparent;
-  padding-left: 8px;
-  animation: slideInLeft 0.3s ease-out;
+.transcript-segment {
+  animation: fadeIn 0.3s ease-out;
 }
 
-.transcript-line.recent {
-  border-left-color: rgba(34, 197, 94, 0.5);
-  background: rgba(34, 197, 94, 0.05);
-  border-radius: 4px;
+.transcript-segment.recent {
+  background: rgba(34, 197, 94, 0.1);
+  border-radius: 3px;
+  padding: 1px 2px;
 }
 
-.transcript-line.high-confidence {
+.transcript-segment.high-confidence {
   color: rgba(255, 255, 255, 0.95);
 }
 
-.transcript-line.medium-confidence {
+.transcript-segment.medium-confidence {
   color: rgba(255, 255, 255, 0.8);
 }
 
-.transcript-line.low-confidence {
+.transcript-segment.low-confidence {
   color: rgba(255, 255, 255, 0.6);
   font-style: italic;
 }
@@ -445,7 +471,7 @@ body {
     rgba(239, 68, 68, 0.8) 100%);
   width: 0%;
   border-radius: 2px;
-  transition: width 0.1s ease-out;
+  transition: width 0.05s ease-out, background 0.2s ease-out; /* Faster width updates */
 }
 
 .audio-level-text {

@@ -221,28 +221,41 @@ function createBrowserAudioService() {
           }
         });
 
-        // Use Web Audio API to get raw PCM data for Deepgram
+        console.log('Microphone access granted, starting audio processing...');
+
+        // For now, let's use the proven ScriptProcessor approach with optimizations
+        return this.startRecordingFallback();
+        
+      } catch (error) {
+        console.error('Failed to get microphone access:', error);
+        return false;
+      }
+    },
+    
+    async startRecordingFallback() {
+      console.log('Using ScriptProcessor fallback');
+      try {
+        // Use Web Audio API with ScriptProcessor fallback
         this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
           sampleRate: 16000
         });
         
         this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
-        this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+        this.processor = this.audioContext.createScriptProcessor(1024, 1, 1); // Reduced buffer size
         
         this.processor.onaudioprocess = (event) => {
           const inputBuffer = event.inputBuffer;
           const inputData = inputBuffer.getChannelData(0);
           
-          // Convert Float32Array to Int16Array for Deepgram
+          // Optimized conversion
           const pcmData = new Int16Array(inputData.length);
           for (let i = 0; i < inputData.length; i++) {
             const sample = Math.max(-1, Math.min(1, inputData[i]));
-            pcmData[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+            pcmData[i] = sample < 0 ? (sample * 32768) | 0 : (sample * 32767) | 0;
           }
           
-          // Send PCM data to main process
           if (window.electronAPI) {
-            console.log('Sending PCM audio chunk, size:', pcmData.length);
+            console.log(`Fallback: sending ${pcmData.length} samples`);
             window.electronAPI.sendAudioData(Array.from(new Uint8Array(pcmData.buffer)));
           }
         };
@@ -253,13 +266,17 @@ function createBrowserAudioService() {
         this.isRecording = true;
         return true;
       } catch (error) {
-        console.error('Failed to start recording:', error);
+        console.error('Fallback recording failed:', error);
         return false;
       }
     },
 
     stopRecording() {
       if (this.processor) {
+        // Clean up AudioWorklet port listeners
+        if (this.processor.port) {
+          this.processor.port.onmessage = null;
+        }
         this.processor.disconnect();
         this.processor = null;
       }
@@ -311,6 +328,11 @@ function setupTranscriptionEventListeners() {
 
   window.electronAPI.onTranscriptionDisconnected(() => {
     updateConnectionStatus('disconnected');
+  });
+
+  // Listen for connection quality changes
+  window.electronAPI.onConnectionQualityChange((qualityData) => {
+    updateConnectionQuality(qualityData);
   });
 }
 
@@ -377,15 +399,14 @@ function handleTranscriptionData(data) {
   const finalTextEl = document.getElementById('final-text');
 
   if (data.is_final) {
-    // Clear interim text
-    interimTextEl.textContent = '';
-    
-    // Add to final transcript
+    // Only clear interim text and add to final if we have actual content
     if (data.text.trim()) {
+      interimTextEl.textContent = '';
       addTranscriptLine(data.text, data.confidence);
     }
+    // Don't clear interim text for empty final results - this preserves ongoing interim text
   } else {
-    // Show interim text
+    // Show interim text (real-time transcription)
     interimTextEl.textContent = data.text;
   }
 
@@ -397,42 +418,48 @@ function handleTranscriptionData(data) {
 function addTranscriptLine(text, confidence) {
   const finalTextEl = document.getElementById('final-text');
   
-  // Create new transcript line
-  const line = document.createElement('div');
-  line.className = 'transcript-line';
+  // Remove placeholder if it exists
+  const placeholder = document.getElementById('placeholder-text');
+  if (placeholder) {
+    placeholder.remove();
+  }
+  
+  // Create span for this text segment instead of div (inline element)
+  const span = document.createElement('span');
+  span.className = 'transcript-segment';
   
   // Add confidence class
   if (confidence >= 0.8) {
-    line.classList.add('high-confidence');
+    span.classList.add('high-confidence');
   } else if (confidence >= 0.6) {
-    line.classList.add('medium-confidence');
+    span.classList.add('medium-confidence');
   } else {
-    line.classList.add('low-confidence');
+    span.classList.add('low-confidence');
   }
   
   // Mark as recent
-  line.classList.add('recent');
-  setTimeout(() => line.classList.remove('recent'), 3000);
+  span.classList.add('recent');
+  setTimeout(() => span.classList.remove('recent'), 3000);
   
-  line.textContent = text;
+  span.textContent = text + ' '; // Add space after each segment
   
   // Add to transcript
   transcriptLines.push({
     text: text,
     confidence: confidence,
     timestamp: Date.now(),
-    element: line
+    element: span
   });
 
-  // Remove old lines if we exceed the limit
+  // Remove old segments if we exceed the limit
   if (transcriptLines.length > maxTranscriptLines) {
-    const oldLine = transcriptLines.shift();
-    if (oldLine.element && oldLine.element.parentNode) {
-      oldLine.element.remove();
+    const oldSegment = transcriptLines.shift();
+    if (oldSegment.element && oldSegment.element.parentNode) {
+      oldSegment.element.remove();
     }
   }
 
-  finalTextEl.appendChild(line);
+  finalTextEl.appendChild(span);
 }
 
 function updateRecordingUI(recording) {
@@ -453,6 +480,37 @@ function updateRecordingUI(recording) {
     recordText.textContent = 'Start';
     recordingIndicator.classList.add('hidden');
     audioLevelContainer.classList.add('hidden');
+    // Reset audio level when stopping
+    updateAudioLevel(0);
+  }
+}
+
+// Immediate visual feedback for audio levels (0ms latency)
+function updateAudioLevel(level) {
+  const audioLevelFill = document.getElementById('audio-level-fill');
+  const audioLevelText = document.getElementById('audio-level-text');
+  
+  if (audioLevelFill && audioLevelText) {
+    // Smooth level updates with CSS transitions
+    audioLevelFill.style.width = `${level}%`;
+    audioLevelText.textContent = `${level}%`;
+    
+    // Visual feedback: change colors based on level
+    if (level > 70) {
+      audioLevelFill.style.background = 'linear-gradient(90deg, rgba(34, 197, 94, 0.8) 0%, rgba(251, 191, 36, 0.8) 60%, rgba(239, 68, 68, 0.8) 100%)';
+    } else if (level > 30) {
+      audioLevelFill.style.background = 'linear-gradient(90deg, rgba(34, 197, 94, 0.8) 0%, rgba(251, 191, 36, 0.8) 100%)';
+    } else {
+      audioLevelFill.style.background = 'rgba(34, 197, 94, 0.8)';
+    }
+    
+    // Add a subtle pulse effect when speaking
+    const recordIcon = document.getElementById('record-icon');
+    if (recordIcon && level > 10) {
+      recordIcon.style.transform = `scale(${1 + (level / 1000)})`;
+    } else if (recordIcon) {
+      recordIcon.style.transform = 'scale(1)';
+    }
   }
 }
 
@@ -481,6 +539,37 @@ function updateConnectionStatus(status) {
     default:
       statusText.textContent = 'Disconnected';
       break;
+  }
+}
+
+// Update connection quality based on latency measurements
+function updateConnectionQuality(qualityData) {
+  const statusText = document.getElementById('status-text');
+  const statusDot = document.getElementById('status-dot');
+  
+  if (statusText && qualityData) {
+    const latencyText = qualityData.latency ? ` (${Math.round(qualityData.latency)}ms)` : '';
+    
+    // Update status text with quality info
+    switch (qualityData.quality) {
+      case 'good':
+        statusText.textContent = `Connected${latencyText}`;
+        statusDot.classList.remove('connecting', 'error');
+        statusDot.classList.add('connected');
+        break;
+      case 'fair':
+        statusText.textContent = `Connected${latencyText}`;
+        statusDot.classList.remove('error');
+        statusDot.classList.add('connecting'); // Yellow for fair quality
+        break;
+      case 'poor':
+        statusText.textContent = `Slow${latencyText}`;
+        statusDot.classList.remove('connected', 'connecting');
+        statusDot.classList.add('error'); // Red for poor quality
+        break;
+    }
+    
+    console.log(`Connection quality: ${qualityData.quality}, avg latency: ${Math.round(qualityData.latency)}ms`);
   }
 }
 
@@ -555,3 +644,69 @@ if (process.env.NODE_ENV === 'development') {
     }
   });
 }
+
+// Setup resize handles for frameless window
+function setupResizeHandles() {
+  const resizeBottom = document.getElementById('resize-bottom');
+  const resizeRight = document.getElementById('resize-right');
+  const resizeBottomRight = document.getElementById('resize-bottom-right');
+
+  let isResizing = false;
+  let startX, startY, startWidth, startHeight;
+
+  function startResize(e, direction) {
+    isResizing = true;
+    startX = e.screenX;
+    startY = e.screenY;
+    
+    // Get current window size from Electron instead of DOM
+    window.electronAPI.getWindowBounds().then(bounds => {
+      startWidth = bounds.width;
+      startHeight = bounds.height;
+    });
+    
+    document.addEventListener('mousemove', (e) => resizeMove(e, direction));
+    document.addEventListener('mouseup', stopResize);
+    e.preventDefault();
+  }
+
+  function resizeMove(e, direction) {
+    if (!isResizing || startWidth === undefined) return;
+
+    const deltaX = e.screenX - startX;
+    const deltaY = e.screenY - startY;
+
+    let newWidth = startWidth;
+    let newHeight = startHeight;
+
+    if (direction.includes('right')) {
+      newWidth = Math.max(300, startWidth + deltaX);
+    }
+    if (direction.includes('bottom')) {
+      newHeight = Math.max(150, startHeight + deltaY);
+    }
+
+    // Update Electron window size
+    window.electronAPI.resizeWindow(newWidth, newHeight);
+  }
+
+  function stopResize() {
+    isResizing = false;
+    document.removeEventListener('mousemove', resizeMove);
+    document.removeEventListener('mouseup', stopResize);
+  }
+
+  // Add event listeners
+  if (resizeBottom) {
+    resizeBottom.addEventListener('mousedown', (e) => startResize(e, 'bottom'));
+  }
+  if (resizeRight) {
+    resizeRight.addEventListener('mousedown', (e) => startResize(e, 'right'));
+  }
+  if (resizeBottomRight) {
+    resizeBottomRight.addEventListener('mousedown', (e) => startResize(e, 'bottom-right'));
+  }
+}
+
+// Initialize resize handles
+setupResizeHandles();

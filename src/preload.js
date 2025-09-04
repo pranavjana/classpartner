@@ -14,8 +14,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Window position (for dragging)
   moveWindow: (deltaX, deltaY) => ipcRenderer.send('window-move', deltaX, deltaY),
   
+  // Window resize
+  resizeWindow: (width, height) => ipcRenderer.send('window-resize', width, height),
+  
   // Window state queries
   isAlwaysOnTop: () => ipcRenderer.invoke('is-always-on-top'),
+  getWindowBounds: () => ipcRenderer.invoke('get-window-bounds'),
   
   // Transcription features
   startTranscription: () => ipcRenderer.invoke('start-transcription'),
@@ -29,6 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onTranscriptionError: (callback) => ipcRenderer.on('transcription-error', (event, error) => callback(error)),
   onTranscriptionConnected: (callback) => ipcRenderer.on('transcription-connected', () => callback()),
   onTranscriptionDisconnected: (callback) => ipcRenderer.on('transcription-disconnected', () => callback()),
+  onConnectionQualityChange: (callback) => ipcRenderer.on('connection-quality-change', (event, data) => callback(data)),
   
   // Cleanup event listeners
   removeTranscriptionListeners: () => {
@@ -37,6 +42,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('transcription-error');
     ipcRenderer.removeAllListeners('transcription-connected');
     ipcRenderer.removeAllListeners('transcription-disconnected');
+    ipcRenderer.removeAllListeners('connection-quality-change');
   },
   
   // Settings and configuration
