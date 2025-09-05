@@ -1,98 +1,136 @@
-// AudioWorklet processor for low-latency audio capture
-class AudioProcessor extends AudioWorkletProcessor {
-  constructor() {
+// audio-processor.js
+// AudioWorklet processor: downmix -> resample (to 16k) -> Int16 PCM -> postMessage
+class PCM16Worklet extends AudioWorkletProcessor {
+  constructor(options) {
     super();
-    this.bufferSize = 1024; // 64ms at 16kHz (reduced from 4096 for lower latency)
-    this.buffer = new Float32Array(this.bufferSize);
-    this.bufferIndex = 0;
-    this.lastSendTime = 0;
-    this.minSendInterval = 50; // Minimum 50ms between sends to avoid flooding
-    
-    // Audio level monitoring for immediate feedback
-    this.audioLevelSamples = 128; // Smaller window for real-time level updates
-    this.levelBuffer = new Float32Array(this.audioLevelSamples);
-    this.levelIndex = 0;
-    this.lastLevelUpdate = 0;
-    this.levelUpdateInterval = 16; // ~60fps for smooth level updates
+    const { targetSampleRate = 16000, chunkSize = 1600 } = (options.processorOptions || {});
+    this.targetRate = targetSampleRate;    // 16k Hz
+    this.chunkSize  = chunkSize;           // samples per chunk @ targetRate (~100ms)
+
+    this.inRate = sampleRate;              // context rate (e.g., 44.1k/48k)
+    this.buf = [];                         // queue of Float32 subarrays (targetRate)
+
+    // Audio level meter (UI feedback @ ~60 fps)
+    this.levelN = 128;
+    this.levelBuf = new Float32Array(this.levelN);
+    this.levelIdx = 0;
+    this.lastLevelFrame = 0;
+    this.levelIntervalFrames = Math.round(this.inRate / 60); // ~60 fps
+
+    this.stopped = false;
+
+    this.port.onmessage = (e) => {
+      if (e.data?.type === 'stop') this.stopped = true;
+    };
   }
 
-  process(inputs, outputs, parameters) {
+  // Downmix any #channels to mono
+  downmixToMono(input) {
+    if (!input || input.length === 0) return new Float32Array(0);
+    if (input.length === 1) return input[0];
+    const frames = input[0].length;
+    const mono = new Float32Array(frames);
+    for (let c = 0; c < input.length; c++) {
+      const ch = input[c];
+      for (let i = 0; i < frames; i++) mono[i] += ch[i];
+    }
+    for (let i = 0; i < frames; i++) mono[i] /= input.length;
+    return mono;
+  }
+
+  // Simple linear resampler (good enough for speech)
+  resampleFloat32(monoIn, fromRate, toRate) {
+    if (fromRate === toRate || monoIn.length === 0) return monoIn;
+    const ratio = fromRate / toRate;
+    const outLen = Math.floor(monoIn.length / ratio);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const idx = i * ratio;
+      const i0 = Math.floor(idx);
+      const i1 = Math.min(i0 + 1, monoIn.length - 1);
+      const frac = idx - i0;
+      out[i] = monoIn[i0] * (1 - frac) + monoIn[i1] * frac;
+    }
+    return out;
+  }
+
+  floatToPCM16(f32) {
+    const i16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      let s = Math.max(-1, Math.min(1, f32[i]));
+      i16[i] = (s < 0 ? s * 0x8000 : s * 0x7FFF) | 0;
+    }
+    return new Uint8Array(i16.buffer); // little-endian
+  }
+
+  // Concatenate queued Float32Arrays into exactly N samples
+  takeChunkExact(n) {
+    let need = n;
+    const out = new Float32Array(n);
+    let off = 0;
+    while (need > 0 && this.buf.length) {
+      const head = this.buf[0];
+      if (head.length <= need) {
+        out.set(head, off);
+        off += head.length;
+        need -= head.length;
+        this.buf.shift();
+      } else {
+        out.set(head.subarray(0, need), off);
+        this.buf[0] = head.subarray(need);
+        off += need;
+        need = 0;
+      }
+    }
+    return (off === n) ? out : null;
+  }
+
+  postLevel(sample) {
+    // simple RMS-ish tracker using abs, lightweight for UI
+    this.levelBuf[this.levelIdx] = Math.abs(sample);
+    this.levelIdx = (this.levelIdx + 1) % this.levelN;
+
+    const frameNow = currentFrame;
+    if (frameNow - this.lastLevelFrame >= this.levelIntervalFrames) {
+      let sumSq = 0;
+      for (let i = 0; i < this.levelN; i++) {
+        const v = this.levelBuf[i];
+        sumSq += v * v;
+      }
+      const rms = Math.sqrt(sumSq / this.levelN);
+      const level = Math.min(100, Math.max(0, Math.floor(rms * 200)));
+      this.port.postMessage({ type: 'audioLevel', level, frame: frameNow });
+      this.lastLevelFrame = frameNow;
+    }
+  }
+
+  process(inputs, _outputs, _parameters) {
+    if (this.stopped) return false;
+
     const input = inputs[0];
-    const currentTime = currentFrame / sampleRate * 1000; // Current time in milliseconds
-    
     if (input && input.length > 0) {
-      const channelData = input[0]; // First channel
-      
-      for (let i = 0; i < channelData.length; i++) {
-        const sample = channelData[i];
-        this.buffer[this.bufferIndex] = sample;
-        this.bufferIndex++;
-        
-        // Track audio levels for immediate visual feedback
-        this.levelBuffer[this.levelIndex] = Math.abs(sample);
-        this.levelIndex = (this.levelIndex + 1) % this.audioLevelSamples;
-        
-        // Send when buffer is full or enough time has passed
-        if (this.bufferIndex >= this.bufferSize || 
-            (this.bufferIndex > 0 && currentTime - this.lastSendTime >= this.minSendInterval)) {
-          this.sendAudioData();
-        }
-      }
-      
-      // Send audio level updates for immediate visual feedback
-      if (currentTime - this.lastLevelUpdate >= this.levelUpdateInterval) {
-        this.sendAudioLevel();
-        this.lastLevelUpdate = currentTime;
+      const mono = this.downmixToMono(input);
+      // update level from current buffer (pick some samples)
+      if (mono.length) this.postLevel(mono[0]);
+
+      const resampled = this.resampleFloat32(mono, this.inRate, this.targetRate);
+      if (resampled.length) this.buf.push(resampled);
+
+      // emit fixed-size chunks at targetRate
+      let ready = 0;
+      for (let i = 0; i < this.buf.length; i++) ready += this.buf[i].length;
+      while (ready >= this.chunkSize) {
+        const chunk = this.takeChunkExact(this.chunkSize);
+        if (!chunk) break;
+        ready -= this.chunkSize;
+        const bytes = this.floatToPCM16(chunk);
+        // Transfer buffer ownership for zero-copy
+        this.port.postMessage({ type: 'pcm16', payload: bytes }, [bytes.buffer]);
       }
     }
-    
-    return true; // Keep processor alive
-  }
-  
-  sendAudioData() {
-    if (this.bufferIndex === 0) return;
-    
-    // Create a copy of the current buffer data
-    const audioData = new Float32Array(this.buffer.subarray(0, this.bufferIndex));
-    
-    // Convert Float32 to Int16 for Deepgram (optimized conversion)
-    const pcmData = new Int16Array(audioData.length);
-    for (let i = 0; i < audioData.length; i++) {
-      const sample = Math.max(-1, Math.min(1, audioData[i]));
-      pcmData[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-    }
-    
-    // Send to main thread
-    this.port.postMessage({
-      type: 'audio',
-      data: pcmData.buffer,
-      samples: audioData.length,
-      timestamp: performance.now()
-    });
-    
-    // Reset buffer
-    this.bufferIndex = 0;
-    this.lastSendTime = performance.now();
-  }
-  
-  sendAudioLevel() {
-    // Calculate RMS (Root Mean Square) audio level
-    let sum = 0;
-    for (let i = 0; i < this.audioLevelSamples; i++) {
-      sum += this.levelBuffer[i] * this.levelBuffer[i];
-    }
-    const rms = Math.sqrt(sum / this.audioLevelSamples);
-    
-    // Convert to percentage (0-100) with logarithmic scaling for better visual
-    const level = Math.min(100, Math.max(0, Math.floor(rms * 200)));
-    
-    // Send level update to main thread for immediate visual feedback
-    this.port.postMessage({
-      type: 'audioLevel',
-      level: level,
-      timestamp: performance.now()
-    });
+
+    return true;
   }
 }
 
-registerProcessor('audio-processor', AudioProcessor);
+registerProcessor('pcm16-worklet', PCM16Worklet);

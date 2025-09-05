@@ -4,28 +4,19 @@ class AudioService extends EventEmitter {
   constructor() {
     super();
     this.mediaStream = null;
-    this.mediaRecorder = null;
     this.audioContext = null;
+    this.workletNode = null;
     this.analyser = null;
     this.isRecording = false;
     this.audioLevel = 0;
     this.animationId = null;
+    this.selectedDeviceId = null; // optional: set via setter below
   }
 
   async requestMicrophonePermission() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } 
-      });
-      
-      // Test that we got permission and then stop the test stream
-      stream.getTracks().forEach(track => track.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
       return true;
     } catch (error) {
       console.error('Microphone permission denied:', error);
@@ -36,32 +27,59 @@ class AudioService extends EventEmitter {
 
   async startRecording() {
     try {
-      if (this.isRecording) {
-        console.log('Already recording');
-        return false;
-      }
+      if (this.isRecording) return false;
 
-      // Request microphone access
+      // 1) Acquire mic at native rate (downsample in worklet for best quality)
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
+          deviceId: this.selectedDeviceId ? { exact: this.selectedDeviceId } : undefined,
           channelCount: 1,
-          sampleRate: 16000,
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
         }
       });
 
-      // Set up audio analysis for level monitoring
-      this.setupAudioAnalysis();
+      // 2) AudioContext (worklet will resample to 16 kHz)
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
-      // Set up MediaRecorder for Deepgram
-      this.setupMediaRecorder();
+      // 3) Load processor and create node
+      await this.audioContext.audioWorklet.addModule('audio-processor.js');
+      this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm16-worklet', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 1,
+        processorOptions: {
+          targetSampleRate: 16000,
+          chunkSize: 1600, // 100ms @ 16kHz
+        }
+      });
+
+      // 4) Level meter analyser
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.8;
+
+      // Connect graph
+      source.connect(this.workletNode);
+      source.connect(this.analyser);
+      // Worklet output is not routed to speakers; no need to connect to destination
+
+      // 5) Stream PCM Int16 buffers to main
+      this.workletNode.port.onmessage = (e) => {
+        const { type, payload } = e.data || {};
+        if (type === 'pcm16') {
+          window.transcription.sendAudio(payload); // payload is a Uint8Array (transferable-friendly)
+        } else if (type === 'audioLevel') {
+          this.emit('audio-level', e.data.level);
+        }
+      };
 
       this.isRecording = true;
+      this.monitorAudioLevel();
       this.emit('recording-started');
-      console.log('Audio recording started');
-      
+      console.log('Audio recording (PCM16) started');
       return true;
     } catch (error) {
       console.error('Failed to start recording:', error);
@@ -70,134 +88,51 @@ class AudioService extends EventEmitter {
     }
   }
 
-  setupAudioAnalysis() {
-    if (!this.mediaStream) return;
-
-    try {
-      this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
-        sampleRate: 16000
-      });
-      
-      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-      this.analyser = this.audioContext.createAnalyser();
-      
-      this.analyser.fftSize = 256;
-      this.analyser.smoothingTimeConstant = 0.8;
-      
-      source.connect(this.analyser);
-      
-      // Start monitoring audio levels
-      this.monitorAudioLevel();
-    } catch (error) {
-      console.error('Failed to setup audio analysis:', error);
-    }
-  }
-
-  setupMediaRecorder() {
-    if (!this.mediaStream) return;
-
-    try {
-      // Use appropriate MIME type for the browser
-      let mimeType = 'audio/webm;codecs=opus';
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'audio/webm';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = 'audio/wav';
-        }
-      }
-
-      this.mediaRecorder = new MediaRecorder(this.mediaStream, {
-        mimeType: mimeType,
-        audioBitsPerSecond: 16000
-      });
-
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          this.emit('audio-data', event.data);
-        }
-      };
-
-      this.mediaRecorder.onerror = (error) => {
-        console.error('MediaRecorder error:', error);
-        this.emit('error', error);
-      };
-
-      this.mediaRecorder.onstop = () => {
-        console.log('MediaRecorder stopped');
-        this.emit('recording-stopped');
-      };
-
-      // Start recording with small chunks for real-time streaming
-      this.mediaRecorder.start(100); // 100ms chunks
-    } catch (error) {
-      console.error('Failed to setup MediaRecorder:', error);
-      this.emit('error', error);
-    }
-  }
-
   monitorAudioLevel() {
     if (!this.analyser || !this.isRecording) return;
-
     const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-    
-    const updateLevel = () => {
-      if (!this.isRecording) return;
 
+    const tick = () => {
+      if (!this.isRecording) return;
       this.analyser.getByteFrequencyData(dataArray);
-      
-      // Calculate average level
       let sum = 0;
-      for (let i = 0; i < dataArray.length; i++) {
-        sum += dataArray[i];
-      }
-      
-      const average = sum / dataArray.length;
-      this.audioLevel = Math.round((average / 255) * 100);
-      
+      for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+      const avg = sum / dataArray.length;
+      this.audioLevel = Math.round((avg / 255) * 100);
       this.emit('audio-level', this.audioLevel);
-      
-      this.animationId = requestAnimationFrame(updateLevel);
+      this.animationId = requestAnimationFrame(tick);
     };
 
-    updateLevel();
+    tick();
   }
 
-  stopRecording() {
-    if (!this.isRecording) {
-      console.log('Not currently recording');
-      return false;
-    }
-
+  async stopRecording() {
+    if (!this.isRecording) return false;
     try {
       this.isRecording = false;
 
-      // Stop animation frame
       if (this.animationId) {
         cancelAnimationFrame(this.animationId);
         this.animationId = null;
       }
-
-      // Stop MediaRecorder
-      if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
-        this.mediaRecorder.stop();
+      if (this.workletNode) {
+        try { this.workletNode.port.postMessage({ type: 'stop' }); } catch {}
+        this.workletNode.disconnect();
+        this.workletNode = null;
       }
-
-      // Close audio context
-      if (this.audioContext && this.audioContext.state !== 'closed') {
-        this.audioContext.close();
-      }
-
-      // Stop all media tracks
       if (this.mediaStream) {
-        this.mediaStream.getTracks().forEach(track => {
-          track.stop();
-        });
+        this.mediaStream.getTracks().forEach(t => t.stop());
+        this.mediaStream = null;
       }
+      if (this.audioContext && this.audioContext.state !== 'closed') {
+        await this.audioContext.close();
+      }
+      this.audioContext = null;
+      this.analyser = null;
+      this.audioLevel = 0;
 
-      this.cleanup();
       this.emit('recording-stopped');
       console.log('Audio recording stopped');
-      
       return true;
     } catch (error) {
       console.error('Failed to stop recording:', error);
@@ -206,51 +141,35 @@ class AudioService extends EventEmitter {
     }
   }
 
-  cleanup() {
-    this.mediaStream = null;
-    this.mediaRecorder = null;
-    this.audioContext = null;
-    this.analyser = null;
-    this.audioLevel = 0;
-  }
+  isCurrentlyRecording() { return this.isRecording; }
+  getCurrentAudioLevel() { return this.audioLevel; }
 
-  isCurrentlyRecording() {
-    return this.isRecording;
-  }
-
-  getCurrentAudioLevel() {
-    return this.audioLevel;
-  }
-
-  // Check if microphone is available
   async checkMicrophoneAvailability() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const audioInputs = devices.filter(device => device.kind === 'audioinput');
-      return audioInputs.length > 0;
-    } catch (error) {
-      console.error('Failed to check microphone availability:', error);
+      return devices.some(d => d.kind === 'audioinput');
+    } catch (e) {
+      console.error('Failed to check microphone availability:', e);
       return false;
     }
   }
 
-  // Get available audio input devices
   async getAudioInputDevices() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       return devices
-        .filter(device => device.kind === 'audioinput')
-        .map(device => ({
-          deviceId: device.deviceId,
-          label: device.label || `Microphone ${device.deviceId.substr(0, 8)}...`
-        }));
-    } catch (error) {
-      console.error('Failed to get audio input devices:', error);
+        .filter(d => d.kind === 'audioinput')
+        .map(d => ({ deviceId: d.deviceId, label: d.label || `Microphone ${d.deviceId.slice(0,8)}...` }));
+    } catch (e) {
+      console.error('Failed to get audio input devices:', e);
       return [];
     }
   }
 
-  // Destroy the service and clean up all resources
+  setInputDevice(deviceId) {
+    this.selectedDeviceId = deviceId || null;
+  }
+
   destroy() {
     this.stopRecording();
     this.removeAllListeners();

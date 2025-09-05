@@ -4,6 +4,8 @@ const Store = require('electron-store');
 require('dotenv').config();
 
 const DeepgramService = require('./services/deepGram.js');
+// ⬇️ AI pipeline (main-process worker thread)
+const { AIPipeline } = require('./services/ai/pipeline');
 
 const store = new Store();
 
@@ -23,6 +25,7 @@ if (require('electron-squirrel-startup')) {
 
 let mainWindow;
 let deepgramService = null;
+let aiPipeline = null;
 
 // Register IPC handlers once (outside createWindow to avoid duplicate registration)
 function setupIpcHandlers() {
@@ -82,15 +85,27 @@ function setupIpcHandlers() {
     return store.store;
   });
 
+  // --- AI: optional manual enqueue from renderer (if you ever want to push your own final segments)
+  ipcMain.on('transcript:final', (_evt, seg) => {
+  console.log('[AI PIPELINE] received final segment in main:', seg && seg.text ? seg.text.slice(0, 60) : seg);
+  if (aiPipeline && seg?.text) {
+    aiPipeline.enqueueSegment(seg);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ai:log', { message: 'enqueued segment', textPreview: seg.text.slice(0, 60) });
+    }
+  }
+});
+
+
   // Transcription handlers
   ipcMain.handle('start-transcription', async () => {
     try {
       const apiKey = process.env.DEEPGRAM_API_KEY;
-      
+
       if (!apiKey) {
-        return { 
-          success: false, 
-          error: 'Deepgram API key not found. Please add DEEPGRAM_API_KEY to your .env file.' 
+        return {
+          success: false,
+          error: 'Deepgram API key not found. Please add DEEPGRAM_API_KEY to your .env file.'
         };
       }
 
@@ -100,35 +115,43 @@ function setupIpcHandlers() {
         setupDeepgramEventHandlers();
       }
 
+      // Initialize AI pipeline once (safe even if no AI key; it will noop until configured)
+      ensureAiPipeline();
+
       // Connect to Deepgram
       await deepgramService.connect();
-      
+
       console.log('Transcription started successfully');
       return { success: true, message: 'Transcription started' };
-      
+
     } catch (error) {
       console.error('Failed to start transcription:', error);
-      return { 
-        success: false, 
-        error: `Failed to start transcription: ${error.message}` 
+      return {
+        success: false,
+        error: `Failed to start transcription: ${error.message}`
       };
     }
   });
+
+  ipcMain.handle('ai:force-backup', () => { aiPipeline.worker.postMessage({ type:'debug:forceBackup' }); });
 
   ipcMain.handle('stop-transcription', () => {
     try {
       if (deepgramService) {
         deepgramService.disconnect();
       }
-      
+      if (aiPipeline) {
+        aiPipeline.flush();
+      }
+
       console.log('Transcription stopped');
       return { success: true, message: 'Transcription stopped' };
-      
+
     } catch (error) {
       console.error('Failed to stop transcription:', error);
-      return { 
-        success: false, 
-        error: `Failed to stop transcription: ${error.message}` 
+      return {
+        success: false,
+        error: `Failed to stop transcription: ${error.message}`
       };
     }
   });
@@ -137,7 +160,6 @@ function setupIpcHandlers() {
   ipcMain.handle('send-audio-data', async (event, audioArray) => {
     try {
       if (deepgramService && deepgramService.isConnectedToDeepgram()) {
-        // Optimized buffer conversion - avoid unnecessary array operations
         const buffer = new Uint8Array(audioArray);
         const success = deepgramService.sendAudio(buffer);
         return { success };
@@ -159,16 +181,147 @@ function setupIpcHandlers() {
     }
     return { connected: false, status: 'disconnected' };
   });
+
+  // --- AI: status ping (optional, for UI)
+  ipcMain.handle('get-ai-availability', () => {
+    const configured = Boolean(process.env.AI_PROVIDER && process.env.OPENAI_API_KEY);
+    return { configured, provider: process.env.AI_PROVIDER || null, model: process.env.OPENAI_MODEL || null };
+  });
 }
+
+// Ensure AI pipeline exists and is configured
+function ensureAiPipeline() {
+  if (aiPipeline) return;
+
+  aiPipeline = new AIPipeline({
+    summaryWindowMs: Number(process.env.AI_SUMMARY_WINDOW_MS || 60_000),
+    minSummarizeEveryMs: Number(process.env.AI_MIN_SUMMARIZE_EVERY_MS || 12_000),
+  });
+
+  // Configure provider (keys remain in main)
+  const provider = process.env.AI_PROVIDER || 'openai';
+  const apiKey = process.env.OPENAI_API_KEY || null;
+
+  console.log('[AI CONFIG main] openai key present:', !!process.env.OPENAI_API_KEY,
+            'openrouter key present:', !!process.env.OPENROUTER_API_KEY);
+
+  // Only set provider if we have at least a key for the selected provider
+  aiPipeline.setProviderConfig({
+    provider: process.env.AI_PROVIDER || 'hybrid-openai', // primary=openai, backup=openrouter
+
+    // OpenAI (primary chat)
+    openaiApiKey: process.env.OPENAI_API_KEY,
+
+    // OpenRouter (backup chat)
+    openrouterApiKey: process.env.OPENROUTER_API_KEY,
+    baseUrl:  process.env.OPENROUTER_BASE,
+    model:    process.env.OPENROUTER_MODEL,
+    referer:  process.env.OPENROUTER_REFERER || 'http://localhost',
+    title:    process.env.OPENROUTER_TITLE   || 'Classroom Assistant',
+  });
+
+console.log('[AI CONFIG main] openai:', !!process.env.OPENAI_API_KEY, 'openrouter:', !!process.env.OPENROUTER_API_KEY);
+
+
+
+  // Stream AI updates to renderer
+  aiPipeline.on('update', (payload) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ai:update', payload);
+    }
+  });
+
+  aiPipeline.on('log', (payload) => {
+  console.log('[AI PIPELINE][log]', payload);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('ai:log', payload);
+  }
+});
+
+  aiPipeline.on('error', (e) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ai:error', { message: String(e?.message ?? e) });
+    }
+  });
+}
+
+// after ensureAiPipeline()
+ipcMain.handle('ai:query', async (_evt, { query, opts }) => {
+  if (!aiPipeline) return { success: false, error: 'AI pipeline not ready' };
+  try {
+    const result = await aiPipeline.query(query, opts); // wraps worker call
+    return { success: true, ...result };
+  } catch (e) {
+    return { success: false, error: String(e?.message ?? e) };
+  }
+});
+
+ipcMain.handle('ai:selftest', async () => {
+  if (!aiPipeline) return { success: false, error: 'aiPipeline not ready' };
+
+  const segs = [
+    { id: 't1', text: 'Gradient descent updates parameters to minimize loss.', startMs: 0, endMs: 3000 },
+    { id: 't2', text: 'L2 regularization reduces overfitting by penalizing large weights.', startMs: 3000, endMs: 6000 },
+  ];
+
+  let gotUpdate = false, gotError = null;
+  const onU = () => { gotUpdate = true; };
+  const onE = (e) => { gotError = e; };
+
+  aiPipeline.on('update', onU);
+  aiPipeline.on('error', onE);
+
+  segs.forEach(s => aiPipeline.enqueueSegment(s));
+
+  // wait up to 5s
+  await new Promise(r => setTimeout(r, 5000));
+
+  aiPipeline.off('update', onU);
+  aiPipeline.off('error', onE);
+
+  if (gotError) return { success: false, error: String(gotError?.message ?? gotError) };
+  if (gotUpdate) return { success: true, message: 'ai:update received' };
+  return { success: false, error: 'No ai:update within 5s' };
+});
+
 
 // Set up Deepgram service event handlers
 function setupDeepgramEventHandlers() {
-  if (!deepgramService || !mainWindow) return;
+  if (!deepgramService) return;
 
   deepgramService.on('transcription', (data) => {
-    console.log('Sending transcription to renderer:', data);
+    // Forward all transcription data to renderer
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('transcription-data', data);
+    }
+
+    // If this event represents a FINAL segment, enqueue into AI pipeline
+    // Expect shapes like: { is_final: boolean, text: string, startMs, endMs, id? } — adapt if needed
+    try {
+      const isFinal =
+        data?.is_final === true ||
+        data?.type === 'final' ||
+        data?.channel?.alternatives?.[0]?.transcript && data?.speech_final === true;
+
+      const text =
+        data?.text ||
+        data?.channel?.alternatives?.[0]?.transcript ||
+        data?.transcript ||
+        '';
+
+      if (aiPipeline && isFinal && text.trim()) {
+        const seg = {
+          id: data?.id || cryptoRandomId(),
+          text: text.trim(),
+          startMs: data?.startMs ?? null,
+          endMs: data?.endMs ?? Date.now(),
+        };
+        aiPipeline.enqueueSegment(seg);
+      }
+    } catch (e) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ai:error', { message: `AI enqueue error: ${String(e?.message ?? e)}` });
+      }
     }
   });
 
@@ -197,6 +350,8 @@ function setupDeepgramEventHandlers() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('transcription-disconnected');
     }
+    // Optional: flush pending AI summary on disconnect
+    if (aiPipeline) aiPipeline.flush();
   });
 
   deepgramService.on('quality-change', (qualityData) => {
@@ -206,10 +361,15 @@ function setupDeepgramEventHandlers() {
   });
 }
 
+function cryptoRandomId() {
+  // simple, dependency-free id
+  return 'seg_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
 const createWindow = () => {
   // Get screen dimensions for positioning
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
-  
+
   // Get saved position or default to top-right
   const savedBounds = store.get('windowBounds', {
     x: screenWidth - 420,
@@ -256,9 +416,7 @@ const createWindow = () => {
   });
 };
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
+// This method will be called when Electron has finished initialization.
 app.whenReady().then(() => {
   setupIpcHandlers();
   createWindow();
@@ -274,8 +432,7 @@ app.whenReady().then(() => {
     }
   });
 
-  // On OS X it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
+  // On macOS re-create a window when the dock icon is clicked
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
@@ -283,25 +440,26 @@ app.whenReady().then(() => {
   });
 });
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
+// Quit when all windows are closed, except on macOS.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-// Unregister shortcuts when app is about to quit
+// Unregister shortcuts and clean up services on quit
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
-  
-  // Clean up Deepgram service
+
   if (deepgramService) {
     deepgramService.destroy();
     deepgramService = null;
   }
+  if (aiPipeline) {
+    aiPipeline.dispose();
+    aiPipeline = null;
+  }
 });
 
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.
+// In this file you can include the rest of your app's specific main process code.
+// You can also put them in separate files and import them here.

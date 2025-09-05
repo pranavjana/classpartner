@@ -347,8 +347,8 @@ async function startRecording() {
 
     // Start Deepgram transcription
     updateConnectionStatus('connecting');
-    const result = await window.electronAPI.startTranscription();
-    
+    const result = await window.transcription.start();
+
     if (!result.success) {
       showError(result.error || 'Failed to start transcription');
       return;
@@ -707,6 +707,24 @@ function setupResizeHandles() {
     resizeBottomRight.addEventListener('mousedown', (e) => startResize(e, 'bottom-right'));
   }
 }
+
+window.ai?.onUpdate?.((payload) => {
+  // payload: { summary, actions, keywords, ts }
+  const summaryEl = document.querySelector('#ai-summary');
+  const actionsEl  = document.querySelector('#ai-actions');
+  const tagsEl     = document.querySelector('#ai-keywords');
+
+  if (summaryEl) summaryEl.textContent = payload.summary || '—';
+  if (actionsEl) {
+    actionsEl.innerHTML = (payload.actions || [])
+      .map(a => `<li>${a.title}${a.owner ? ` — ${a.owner}` : ''}${a.due ? ` (due ${a.due})` : ''}</li>`)
+      .join('');
+  }
+  if (tagsEl) {
+    tagsEl.innerHTML = (payload.keywords || []).map(k => `<span class="tag">${k}</span>`).join('');
+  }
+});
+
 
 // Initialize resize handles
 setupResizeHandles();

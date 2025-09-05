@@ -1,4 +1,5 @@
 const { createClient, LiveTranscriptionEvents } = require('@deepgram/sdk');
+const { performance } = require('node:perf_hooks');
 const EventEmitter = require('events');
 
 class DeepgramService extends EventEmitter {
@@ -10,15 +11,15 @@ class DeepgramService extends EventEmitter {
     this.isConnected = false;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
-    this.reconnectDelay = 1000; // 1 second initial delay
+    this.reconnectDelay = 1000; // 1s initial backoff
     this.connectionTimeout = null;
-    
+
     // Performance monitoring
     this.latencyMeasurements = [];
     this.maxLatencyMeasurements = 10;
     this.lastSentTime = 0;
-    this.connectionQuality = 'good'; // good, fair, poor
-    
+    this.connectionQuality = 'good'; // 'good' | 'fair' | 'poor'
+
     if (apiKey) {
       this.deepgramClient = createClient(apiKey);
     }
@@ -30,7 +31,7 @@ class DeepgramService extends EventEmitter {
         throw new Error('Deepgram client not initialized - API key required');
       }
 
-      // Clear any existing connection
+      // Clear existing connection
       if (this.connection) {
         this.disconnect();
       }
@@ -38,40 +39,30 @@ class DeepgramService extends EventEmitter {
       this.emit('status', 'connecting');
       console.log('Connecting to Deepgram...');
 
-      // Create live connection with optimal settings for speed
+      // Live connection (speed-optimized)
       this.connection = this.deepgramClient.listen.live({
         model: 'nova-2',
         language: 'en',
         smart_format: true,
         interim_results: true,
-        endpointing: 150, // Reduced to 150ms for faster response
-        vad_events: true, // Voice activity detection events
+        endpointing: 150,        // faster endpointing
+        vad_events: true,        // VAD on/off speech
         channels: 1,
         sample_rate: 16000,
         encoding: 'linear16',
-        // Performance optimizations
-        numerals: false, // Skip number formatting for speed
-        profanity_filter: false, // Skip profanity filtering for speed
-        redact: false // Skip redaction for speed
+        // perf opts
+        numerals: false,
+        profanity_filter: false,
+        redact: false,
       });
 
-      // Set up event listeners
       this.setupEventListeners();
 
       return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Connection timeout'));
-        }, 10000); // 10 second timeout
+        const t = setTimeout(() => reject(new Error('Connection timeout')), 10000);
 
-        this.once('connected', () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-
-        this.once('error', (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        });
+        this.once('connected', () => { clearTimeout(t); resolve(); });
+        this.once('error', (err)   => { clearTimeout(t); reject(err); });
       });
 
     } catch (error) {
@@ -92,27 +83,64 @@ class DeepgramService extends EventEmitter {
       this.emit('connected');
     });
 
+    // Voice activity (useful for UI hinting)
+    this.connection.on(LiveTranscriptionEvents.SpeechStarted, () => {
+      this.emit('vad', { speaking: true, ts: Date.now() });
+    });
+    this.connection.on(LiveTranscriptionEvents.SpeechEnded, () => {
+      this.emit('vad', { speaking: false, ts: Date.now() });
+    });
+
     this.connection.on(LiveTranscriptionEvents.Transcript, (data) => {
-      if (data && data.channel && data.channel.alternatives && data.channel.alternatives.length > 0) {
-        const transcript = data.channel.alternatives[0];
-        
-        // Measure latency from last audio send to transcript receipt
+      try {
+        const alt = data?.channel?.alternatives?.[0];
+        if (!alt) return;
+
+        // Latency measurement: from last audio send to transcript receipt
         if (this.lastSentTime > 0) {
           const latency = performance.now() - this.lastSentTime;
           this.updateConnectionQuality(latency);
         }
-        
-        console.log('Transcript received:', transcript.transcript, 'confidence:', transcript.confidence, 'is_final:', data.is_final, 'quality:', this.connectionQuality);
-        
-        // Emit even empty transcripts for interim results (they clear the interim text)
-        this.emit('transcription', {
-          text: transcript.transcript,
-          confidence: transcript.confidence,
-          is_final: data.is_final,
+
+        // Derive start/end from word timings if present
+        // Deepgram uses seconds; convert to ms
+        let startMs = null, endMs = null;
+        if (Array.isArray(alt.words) && alt.words.length > 0) {
+          const first = alt.words[0];
+          const last  = alt.words[alt.words.length - 1];
+          if (typeof first.start === 'number') startMs = Math.round(first.start * 1000);
+          if (typeof last.end === 'number')    endMs   = Math.round(last.end * 1000);
+        }
+
+        const payload = {
+          text: alt.transcript || '',
+          confidence: typeof alt.confidence === 'number' ? alt.confidence : null,
+          is_final: Boolean(data?.is_final),
           timestamp: Date.now(),
-          connectionQuality: this.connectionQuality
-        });
+          startMs,
+          endMs,
+          connectionQuality: this.connectionQuality,
+        };
+
+        // Log small line for debug
+        if (payload.is_final) {
+          console.log('[DG final]', payload.text, 'q=', payload.connectionQuality);
+        } else {
+          // Uncomment if you want to see interim spam:
+          // console.log('[DG interim]', payload.text);
+        }
+
+        // Always emit (interim clears UI)
+        this.emit('transcription', payload);
+      } catch (e) {
+        console.error('Transcript handling error:', e);
+        this.emit('error', e);
       }
+    });
+
+    this.connection.on(LiveTranscriptionEvents.Metadata, (data) => {
+      // Model, billing, etc.
+      this.emit('metadata', data);
     });
 
     this.connection.on(LiveTranscriptionEvents.Error, (error) => {
@@ -126,23 +154,17 @@ class DeepgramService extends EventEmitter {
       this.isConnected = false;
       this.emit('status', 'disconnected');
       this.emit('disconnected', event);
-      
-      // Attempt reconnection if not intentionally closed
-      if (this.reconnectAttempts < this.maxReconnectAttempts && event.code !== 1000) {
+
+      // Attempt reconnection if not normal close
+      if (this.reconnectAttempts < this.maxReconnectAttempts && event?.code !== 1000) {
         this.scheduleReconnect();
       }
-    });
-
-    this.connection.on(LiveTranscriptionEvents.Metadata, (data) => {
-      console.log('Deepgram metadata:', data);
-      this.emit('metadata', data);
     });
   }
 
   sendAudio(audioData) {
     if (this.connection && this.isConnected) {
       try {
-        // Track send time for latency measurement
         this.lastSentTime = performance.now();
         this.connection.send(audioData);
         return true;
@@ -159,18 +181,15 @@ class DeepgramService extends EventEmitter {
     if (this.connection) {
       console.log('Disconnecting from Deepgram...');
       this.isConnected = false;
-      
       try {
         this.connection.finish();
       } catch (error) {
         console.error('Error during disconnect:', error);
       }
-      
       this.connection = null;
       this.emit('status', 'disconnected');
     }
 
-    // Clear any pending reconnection
     if (this.connectionTimeout) {
       clearTimeout(this.connectionTimeout);
       this.connectionTimeout = null;
@@ -180,7 +199,7 @@ class DeepgramService extends EventEmitter {
   handleConnectionError() {
     this.isConnected = false;
     this.emit('status', 'error');
-    
+
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.scheduleReconnect();
     } else {
@@ -189,11 +208,9 @@ class DeepgramService extends EventEmitter {
   }
 
   scheduleReconnect() {
-    if (this.connectionTimeout) {
-      clearTimeout(this.connectionTimeout);
-    }
+    if (this.connectionTimeout) clearTimeout(this.connectionTimeout);
 
-    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts); // Exponential backoff
+    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts); // exponential backoff
     this.reconnectAttempts++;
 
     console.log(`Scheduling reconnection attempt ${this.reconnectAttempts} in ${delay}ms`);
@@ -215,52 +232,46 @@ class DeepgramService extends EventEmitter {
 
   getConnectionStatus() {
     if (this.isConnected) return 'connected';
-    if (this.reconnectAttempts > 0) return 'reconnecting';
+    if (this.reconnectAttempts > 0 && this.connectionTimeout) return 'reconnecting';
     if (this.connection) return 'connecting';
     return 'disconnected';
   }
 
   updateConnectionQuality(latency) {
-    // Add latency measurement to rolling window
     this.latencyMeasurements.push(latency);
     if (this.latencyMeasurements.length > this.maxLatencyMeasurements) {
       this.latencyMeasurements.shift();
     }
+    const avgLatency =
+      this.latencyMeasurements.reduce((sum, v) => sum + v, 0) / this.latencyMeasurements.length;
 
-    // Calculate average latency
-    const avgLatency = this.latencyMeasurements.reduce((sum, lat) => sum + lat, 0) / this.latencyMeasurements.length;
+    const prev = this.connectionQuality;
+    if (avgLatency < 200) this.connectionQuality = 'good';
+    else if (avgLatency < 500) this.connectionQuality = 'fair';
+    else this.connectionQuality = 'poor';
 
-    // Determine connection quality
-    const previousQuality = this.connectionQuality;
-    if (avgLatency < 200) {
-      this.connectionQuality = 'good';
-    } else if (avgLatency < 500) {
-      this.connectionQuality = 'fair';
-    } else {
-      this.connectionQuality = 'poor';
-    }
-
-    // Emit quality change events
-    if (previousQuality !== this.connectionQuality) {
+    if (prev !== this.connectionQuality) {
       this.emit('quality-change', {
         quality: this.connectionQuality,
         latency: avgLatency,
-        measurements: this.latencyMeasurements.length
+        measurements: this.latencyMeasurements.length,
       });
     }
   }
 
   getConnectionQuality() {
+    const averageLatency =
+      this.latencyMeasurements.length > 0
+        ? this.latencyMeasurements.reduce((s, v) => s + v, 0) / this.latencyMeasurements.length
+        : 0;
+
     return {
       quality: this.connectionQuality,
-      averageLatency: this.latencyMeasurements.length > 0 
-        ? this.latencyMeasurements.reduce((sum, lat) => sum + lat, 0) / this.latencyMeasurements.length 
-        : 0,
-      measurements: this.latencyMeasurements.length
+      averageLatency,
+      measurements: this.latencyMeasurements.length,
     };
   }
 
-  // Cleanup method
   destroy() {
     this.disconnect();
     this.removeAllListeners();
