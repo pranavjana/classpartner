@@ -3,7 +3,7 @@ const path = require('node:path');
 const Store = require('electron-store');
 require('dotenv').config();
 
-const DeepgramService = require('./services/deepgram');
+const DeepgramService = require('./services/deepGram.js');
 
 const store = new Store();
 
