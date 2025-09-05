@@ -178,10 +178,6 @@ Located in `src/services/deepgram.js`:
 5. Push to your fork: `git push origin feature-name`
 6. Create a pull request
 
-## License
-
-[Add your license here]
-
 ## Support
 
 For issues and questions:
@@ -196,3 +192,4 @@ For issues and questions:
 ---
 
 **Built for better classroom and meeting experiences**
+
