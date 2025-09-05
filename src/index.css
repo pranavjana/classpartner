@@ -16,10 +16,40 @@ body {
   -webkit-app-region: no-drag;
 }
 
+/* Resize handles for frameless window */
+.resize-handle {
+  position: absolute;
+  -webkit-app-region: no-drag;
+}
+
+.resize-handle.bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.resize-handle.right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.resize-handle.bottom-right {
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nw-resize;
+}
+
 /* Main overlay container */
 .overlay-container {
-  width: 400px;
-  height: 150px;
+  width: 100vw;
+  height: 100vh;
   background: rgba(0, 0, 0, 0.7);
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
@@ -47,6 +77,7 @@ body {
   padding: 0 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   -webkit-app-region: drag;
+  gap: 8px;
 }
 
 .drag-handle {
@@ -243,4 +274,284 @@ body {
 .overlay-container.dragging {
   transform: scale(0.98);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* Header Controls */
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+  flex: 1;
+  justify-content: center;
+}
+
+/* Record button */
+.record-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 10px;
+  transition: all 0.2s ease;
+  min-width: 60px;
+}
+
+.record-btn:hover {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.4);
+  transform: scale(1.02);
+}
+
+.record-btn.recording {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.4);
+  animation: pulse-record 2s infinite;
+}
+
+.record-btn.recording:hover {
+  background: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.record-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  transition: all 0.1s ease, transform 0.05s ease; /* Faster response for scale */
+}
+
+.record-btn.recording .record-icon {
+  background: rgba(239, 68, 68, 0.9);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+  animation: pulse-dot 1.5s infinite;
+}
+
+.record-text {
+  font-weight: 500;
+}
+
+/* Connection status */
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(156, 163, 175, 0.7);
+  transition: all 0.3s ease;
+}
+
+.status-dot.connected {
+  background: rgba(34, 197, 94, 0.9);
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+.status-dot.connecting {
+  background: rgba(251, 191, 36, 0.9);
+  animation: pulse-dot 1s infinite;
+}
+
+.status-dot.error {
+  background: rgba(239, 68, 68, 0.9);
+  animation: pulse-dot 0.5s infinite;
+}
+
+.status-text {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+}
+
+/* Recording indicator */
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  font-size: 10px;
+  color: rgba(239, 68, 68, 0.9);
+  font-weight: 500;
+  animation: fadeInScale 0.3s ease-out;
+}
+
+.recording-indicator.hidden {
+  display: none;
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.9);
+  animation: pulse-dot 1.5s infinite;
+}
+
+/* Transcript text styling */
+.interim-text {
+  color: rgba(255, 255, 255, 0.6);
+  font-style: italic;
+  margin-bottom: 4px;
+  animation: fadeIn 0.2s ease-in;
+}
+
+.final-text {
+  color: rgba(255, 255, 255, 0.9);
+  line-height: 1.5;
+}
+
+.transcript-segment {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.transcript-segment.recent {
+  background: rgba(34, 197, 94, 0.1);
+  border-radius: 3px;
+  padding: 1px 2px;
+}
+
+.transcript-segment.high-confidence {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.transcript-segment.medium-confidence {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.transcript-segment.low-confidence {
+  color: rgba(255, 255, 255, 0.6);
+  font-style: italic;
+}
+
+/* Audio level indicator */
+.audio-level-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  font-size: 9px;
+}
+
+.audio-level-container.hidden {
+  display: none;
+}
+
+.audio-level-bar {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.audio-level-fill {
+  height: 100%;
+  background: linear-gradient(90deg, 
+    rgba(34, 197, 94, 0.8) 0%, 
+    rgba(251, 191, 36, 0.8) 60%, 
+    rgba(239, 68, 68, 0.8) 100%);
+  width: 0%;
+  border-radius: 2px;
+  transition: width 0.05s ease-out, background 0.2s ease-out; /* Faster width updates */
+}
+
+.audio-level-text {
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+  min-width: 25px;
+  text-align: right;
+}
+
+/* Animations */
+@keyframes pulse-record {
+  0%, 100% { 
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% { 
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.1);
+  }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { 
+    opacity: 1; 
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 0.6; 
+    transform: scale(0.8);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInScale {
+  from { 
+    opacity: 0; 
+    transform: scale(0.95);
+  }
+  to { 
+    opacity: 1; 
+    transform: scale(1);
+  }
+}
+
+@keyframes slideInLeft {
+  from { 
+    opacity: 0; 
+    transform: translateX(-10px);
+  }
+  to { 
+    opacity: 1; 
+    transform: translateX(0);
+  }
+}
+
+/* Utility classes */
+.hidden {
+  display: none !important;
+}
+
+/* Error state styling */
+.error-message {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 4px 0;
+  color: rgba(239, 68, 68, 0.9);
+  font-size: 10px;
+  animation: fadeInScale 0.3s ease-out;
+}
+
+.error-message .error-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.error-message .error-details {
+  font-size: 9px;
+  opacity: 0.8;
 }

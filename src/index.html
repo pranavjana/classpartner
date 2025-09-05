@@ -14,6 +14,20 @@
           <div class="drag-icon">≡</div>
           <span class="app-title">Classroom Assistant</span>
         </div>
+        <div class="header-controls">
+          <!-- Recording button -->
+          <button class="control-btn record-btn" id="record-btn" title="Start Recording">
+            <div class="record-icon" id="record-icon"></div>
+            <span class="record-text" id="record-text">Start</span>
+          </button>
+          
+          <!-- Connection status -->
+          <div class="connection-status" id="connection-status">
+            <div class="status-dot" id="status-dot"></div>
+            <span class="status-text" id="status-text">Disconnected</span>
+          </div>
+        </div>
+        
         <div class="window-controls">
           <button class="control-btn settings-btn" id="settings-btn" title="Settings">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -36,14 +50,37 @@
 
       <!-- Main content area for transcriptions -->
       <div class="content-area">
+        <!-- Recording indicator -->
+        <div class="recording-indicator hidden" id="recording-indicator">
+          <div class="pulse-dot"></div>
+          <span>Recording...</span>
+        </div>
+        
+        <!-- Transcript display -->
         <div class="transcript-display" id="transcript-display">
-          <div class="placeholder-text">
-            Ready for transcription...
-            <br>
-            <small>Press Ctrl+Shift+T to toggle visibility</small>
+          <div class="interim-text" id="interim-text"></div>
+          <div class="final-text" id="final-text">
+            <div class="placeholder-text" id="placeholder-text">
+              Ready for transcription...
+              <br>
+              <small>Press the record button or Ctrl+Shift+T to toggle visibility</small>
+            </div>
           </div>
         </div>
+        
+        <!-- Audio level indicator -->
+        <div class="audio-level-container hidden" id="audio-level-container">
+          <div class="audio-level-bar">
+            <div class="audio-level-fill" id="audio-level-fill"></div>
+          </div>
+          <span class="audio-level-text" id="audio-level-text">0%</span>
+        </div>
       </div>
+      
+      <!-- Resize handles -->
+      <div class="resize-handle bottom" id="resize-bottom"></div>
+      <div class="resize-handle right" id="resize-right"></div>
+      <div class="resize-handle bottom-right" id="resize-bottom-right"></div>
     </div>
 
     <!-- Context menu -->
