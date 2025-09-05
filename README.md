@@ -1,32 +1,37 @@
 # Classroom Assistant
 
-A real-time transcription overlay application built with Electron and Deepgram API. Provides live speech-to-text transcription in a floating, always-on-top window perfect for classroom or meeting environments.
+A real-time transcription overlay built with **Electron** and the **Deepgram API**. It provides live speech-to-text in a floating, always-on-top window for classrooms and meetings.
 
 ## Features
 
-- **Real-time transcription** using Deepgram's Nova-2 model
+- **Real-time transcription** using Deepgram’s Nova-2 model
 - **Always-on-top overlay** that stays visible during presentations
-- **Live interim results** showing text as you speak
-- **Low-latency audio processing** with optimized buffer sizes
-- **Resizable window** with drag-to-resize functionality
+- **Live interim & final results** as you speak
+- **Low-latency audio processing** (AudioWorklet, optimized buffers)
+- **Resizable window** with drag-to-resize
 - **Connection quality monitoring** with latency feedback
-- **Global shortcuts** for quick show/hide (Ctrl+Shift+T)
-- **Clean, minimal UI** with transparency and blur effects
+- **Global shortcut** to show/hide (Ctrl/⌘ + Shift + T)
+- **Clean, minimal UI** (transparency + blur)
+- **Background AI processing (new)**
+  - Rolling **summaries**, **keywords**, and **action items** while you talk
+  - Super-fast **Q&A** over the last few minutes using **local embeddings** (Xenova, no quotas)
+  - **Hybrid LLM routing:** OpenAI (primary) → OpenRouter (backup) with **sticky cooldown** on rate limits
 
 ## Prerequisites
 
-- **Node.js** (v16 or higher)
+- **Node.js** v16+
 - **npm** or **yarn**
-- **Deepgram API Key** ([Get one free here](https://deepgram.com/))
+- **Deepgram API key**
+- (Optional) **OpenAI** key and/or **OpenRouter** key for AI summaries/Q&A
 
-## Setup Instructions
+## Setup
 
-### 1. Clone the Repository
+### 1) Clone
 
 ```bash
 git clone [repository-url]
 cd classpartner
-```
+
 
 ### 2. Install Dependencies
 
@@ -41,9 +46,28 @@ npm install
 cp .env.example .env
 ```
 
-2. Edit `.env` and add your Deepgram API key:
+2. Edit `.env` and add your keys:
 ```
-DEEPGRAM_API_KEY=your_deepgram_api_key_here
+# Which AI stack to use (default: OpenAI primary + OpenRouter backup)
+AI_PROVIDER=hybrid-openai
+
+# Deepgram
+DEEPGRAM_API_KEY=dg_your_deepgram_key
+
+# OpenAI (primary summaries/Q&A)
+OPENAI_API_KEY=sk_your_openai_key
+
+# OpenRouter (backup summaries/Q&A)
+OPENROUTER_API_KEY=sk-or_your_openrouter_key
+OPENROUTER_BASE=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=meta/llama-3.1-8b-instruct
+OPENROUTER_REFERER=http://localhost
+OPENROUTER_TITLE=Classroom Assistant
+
+# Optional AI cadence tuning (defaults shown)
+AI_MIN_SUMMARIZE_EVERY_MS=12000
+AI_SUMMARY_WINDOW_MS=60000
+
 ```
 
 **Getting a Deepgram API Key:**
@@ -89,22 +113,57 @@ The status indicator shows:
 - **Fair**: Moderate latency (200-500ms)
 - **Poor**: High latency (>500ms)
 
+### AI Processing (new)
+
+- Final transcript chunks are streamed to a worker thread which:
+
+- Maintains a rolling context window
+
+- Generates summaries, keywords, action items on a cadence
+
+- Indexes text with local embeddings (Xenova), enabling quick Q&A
+
+- Rate-limit handling: If OpenAI returns 429/5xx, the pipeline auto-switches to OpenRouter for 5 minutes, then retries later.
+
+### DevTools Quick test
+
+```
+// 1) See AI logs/updates
+window.ai.onLog(m => console.log('[ai log]', m));
+window.ai.onError(e => console.log('[ai error]', e));
+window.ai.onUpdate(p => console.log('[ai update]', p));
+
+// 2) Seed a couple of "final" lines without talking:
+window.bus.sendFinal({ id:'s1', text:'Gradient descent updates parameters to minimize loss.', startMs: Date.now()-4000, endMs: Date.now()-2000 });
+window.bus.sendFinal({ id:'s2', text:'L2 regularization reduces overfitting by penalizing large weights.', startMs: Date.now()-2000, endMs: Date.now() });
+
+// 3) Ask a question (vector-retrieval + single LLM pass)
+await window.ai.ask("What did they say about overfitting?", { k: 6 });
+```
+
 ## Project Structure
 
 ```
 classpartner/
 ├── src/
-│   ├── index.js              # Main Electron process
-│   ├── preload.js            # Secure IPC bridge
-│   ├── renderer.js           # Frontend logic
-│   ├── index.html            # UI layout
-│   ├── index.css             # Styling
+│   ├── index.js                  # Main Electron process (loads .env, sets up IPC, AI pipeline)
+│   ├── preload.js                # Secure IPC bridge
+│   ├── renderer.js               # Frontend logic (UI + devtools helpers)
+│   ├── index.html                # UI layout
+│   ├── index.css                 # Styling
 │   └── services/
-│       └── deepgram.js       # Deepgram WebSocket service
-├── audio-processor.js        # AudioWorklet processor
-├── package.json              # Dependencies and scripts
-├── forge.config.js           # Electron Forge configuration
-└── .env.example              # Environment template
+│       ├── deepGram.js           # Deepgram WebSocket service (case-sensitive)
+|.      ├── audio.js
+│       └── ai/
+│           ├── pipeline.js       # Main-process wrapper for the AI worker
+│           ├── aiWorker.js       # Worker: summaries/keywords/actions + retrieval
+│           └── providers/
+│               └── providerFactory.js  # OpenAI/OpenRouter + Xenova providers
+├── audio-processor.js            # AudioWorklet processor (Float32 -> Int16, low-latency)
+├── package.json
+├── forge.config.js
+└── .env.example
+
 ```
 
 ## Development
@@ -122,6 +181,7 @@ classpartner/
 - **Web Audio API**: Low-latency audio capture and processing
 - **AudioWorklet**: High-performance audio processing
 - **WebSocket**: Real-time communication with Deepgram
+- **Xenova Transformers**: For local embeddings (no quotas)
 
 ### Performance Optimizations
 
@@ -150,6 +210,31 @@ classpartner/
 - **Build failures**: Delete `node_modules` and run `npm install`
 - **Audio permissions**: Grant microphone access in system settings
 
+## AI / Keys Troubleshooting
+
+### 401 (No auth credentials)
+
+- Ensure `.env` has `OPENAI_API_KEY` (no quotes)
+- App must be restarted after edits
+- Keys are passed from main to worker; names must match `openaiApiKey` / `openrouterApiKey`
+
+### 429 (Rate limited)
+
+- Expected under free tiers; the pipeline automatically uses backup for 5 minutes
+- Increase `AI_MIN_SUMMARIZE_EVERY_MS` to reduce request rate
+
+### No ai:update
+
+Open DevTools → run:
+
+```
+await window.ai.availability()
+window.ai.onLog(m => console.log('[ai log]', m));
+```
+
+Confirm you see `LLM primary=...; embeddings=Xenova` and that both keys show `true` in config logs
+
+
 ## Configuration
 
 ### Audio Settings
@@ -168,6 +253,15 @@ Located in `src/services/deepgram.js`:
 - **Smart Format**: Enabled
 - **Interim Results**: Enabled
 - **Endpointing**: 150ms
+
+## AI Providers
+
+### Default: `AI_PROVIDER=hybrid-openai`
+
+- OpenAI primary, OpenRouter backup (sticky cooldown on 429/5xx)
+- Local embeddings: Xenova all-MiniLM-L6-v2 (no API/quotas)
+
+You can add other providers (Groq/DeepInfra/Fireworks/Ollama) by extending `providers/providerFactory.js` and switching `AI_PROVIDER`.
 
 ## Contributing
 
