@@ -75,6 +75,45 @@
           </div>
           <span class="audio-level-text" id="audio-level-text">0%</span>
         </div>
+
+        <!-- AI Summary Panel -->
+        <div class="ai-panel" id="ai-panel">
+          <div class="ai-header">
+            <span class="ai-title">AI Analysis</span>
+            <div class="ai-status" id="ai-status">
+              <div class="ai-status-dot" id="ai-status-dot"></div>
+              <span id="ai-status-text">Initializing...</span>
+            </div>
+          </div>
+          
+          <div class="ai-content" id="ai-content">
+            <div class="ai-section">
+              <h4>Summary</h4>
+              <div class="ai-summary" id="ai-summary">Waiting for conversation...</div>
+            </div>
+            
+            <div class="ai-section">
+              <h4>Action Items</h4>
+              <ul class="ai-actions" id="ai-actions">
+                <li class="placeholder">No action items detected</li>
+              </ul>
+            </div>
+            
+            <div class="ai-section">
+              <h4>Keywords</h4>
+              <div class="ai-keywords" id="ai-keywords">
+                <span class="tag placeholder">No keywords yet</span>
+              </div>
+            </div>
+
+            <div class="ai-debug" id="ai-debug">
+              <h4>Debug Info</h4>
+              <div class="debug-log" id="debug-log">
+                <div class="debug-entry">AI pipeline initializing...</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
       
       <!-- Resize handles -->

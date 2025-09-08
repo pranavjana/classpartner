@@ -205,9 +205,15 @@ parentPort.on('message', async (msg) => {
   try {
     if (msg?.type === 'provider:set') {
   const cfg  = msg.payload || {};
-  const mode = cfg.provider || process.env.AI_PROVIDER || 'hybrid-openai';
+  const mode = cfg.provider || process.env.AI_PROVIDER || 'hybrid-gemini';
 
   // Build clean configs for each LLM
+  const geminiCfg = {
+    provider: 'gemini',
+    apiKey: cfg.geminiApiKey,
+    model: cfg.geminiModel || 'gemini-2.5-flash'
+  };
+
   const openaiCfg = {
     provider: 'openai',
     apiKey:   cfg.openaiApiKey,          // <-- from index.js setProviderConfig
@@ -224,7 +230,11 @@ parentPort.on('message', async (msg) => {
     title:    cfg.title
   };
 
-  if (mode === 'hybrid-openai') {
+  if (mode === 'hybrid-gemini') {
+    state.llmPrimary = createProvider(geminiCfg);
+    state.llmBackup  = createProvider(openaiCfg);
+    state.provider   = createProvider({ provider: 'local-emb' }); // Xenova embeddings
+  } else if (mode === 'hybrid-openai') {
     state.llmPrimary = createProvider(openaiCfg);
     state.llmBackup  = createProvider(openrouterCfg);
     state.provider   = createProvider({ provider: 'local-emb' }); // Xenova embeddings
@@ -232,16 +242,41 @@ parentPort.on('message', async (msg) => {
     state.llmPrimary = createProvider(openrouterCfg);
     state.llmBackup  = createProvider(openaiCfg);
     state.provider   = createProvider({ provider: 'local-emb' });
+  } else if (mode === 'gemini') {
+    // Pure Gemini mode
+    const p = createProvider({ provider: 'gemini', apiKey: geminiCfg.apiKey, model: geminiCfg.model });
+    state.llmPrimary = p; state.llmBackup = null; state.provider = p;
   } else {
     // single provider (not recommended, but safe fallback)
     const p = createProvider({ provider: mode, apiKey: openaiCfg.apiKey || openrouterCfg.apiKey });
     state.llmPrimary = p; state.llmBackup = null; state.provider = p;
   }
 
+  // Determine primary provider name for logging
+  let primaryName = 'unknown';
+  let backupName = 'none';
+  
+  if (mode === 'hybrid-gemini') {
+    primaryName = 'gemini';
+    backupName = 'openai';
+  } else if (mode === 'hybrid-openai') {
+    primaryName = 'openai';
+    backupName = 'openrouter';
+  } else if (mode === 'hybrid-openrouter') {
+    primaryName = 'openrouter';
+    backupName = 'openai';
+  } else if (mode === 'gemini') {
+    primaryName = 'gemini';
+  } else if (mode.includes('openai')) {
+    primaryName = 'openai';
+  } else if (mode.includes('openrouter')) {
+    primaryName = 'openrouter';
+  }
+
   post('ai:log', {
-    message: `LLM primary=${mode.includes('openai') ? 'openai' : 'openrouter'}; backup=${mode.includes('openai') ? 'openrouter' : 'openai'}; embeddings=Xenova`
+    message: `LLM primary=${primaryName}; backup=${backupName}; embeddings=Xenova`
   });
-  post('ai:log', { message: `cfg keys -> openai:${!!cfg.openaiApiKey} openrouter:${!!cfg.openrouterApiKey}` });
+  post('ai:log', { message: `cfg keys -> gemini:${!!cfg.geminiApiKey} openai:${!!cfg.openaiApiKey} openrouter:${!!cfg.openrouterApiKey}` });
 
   return;
 }

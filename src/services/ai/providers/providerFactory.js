@@ -1,14 +1,20 @@
 // src/services/ai/providers/providerFactory.js
 // Returns { summarize, extractActions, keywords, embed }
 
+// Import Vercel AI SDK components
+const { google } = require('@ai-sdk/google');
+const { generateText } = require('ai');
+
 function createProvider(cfg) {
-  const p = (cfg && cfg.provider) || process.env.AI_PROVIDER || 'hybrid-openai';
+  const p = (cfg && cfg.provider) || process.env.AI_PROVIDER || 'hybrid-gemini';
   switch (p) {
     case 'openai':            return openAIProvider(cfg || {});
     case 'openrouter':        return openRouterProvider(cfg || {});
+    case 'gemini':            return geminiProvider(cfg || {});
     case 'local-emb':         return xenovaEmbeddingsProvider();
     case 'hybrid-openai':     return hybridOpenAI(cfg || {});     // OpenAI chat + Xenova emb
     case 'hybrid-openrouter': return hybridOpenRouter(cfg || {}); // OpenRouter chat + Xenova emb
+    case 'hybrid-gemini':     return hybridGemini(cfg || {});     // Gemini chat + Xenova emb
     default:                  return noopProvider();
   }
 }
@@ -159,9 +165,93 @@ function xenovaEmbeddingsProvider() {
   return { summarize: async () => '', extractActions: async () => [], keywords: async () => [], embed };
 }
 
+/* ---------------- Gemini (Vercel AI SDK) ---------------- */
+function geminiProvider(cfg) {
+  const apiKey = cfg.apiKey || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  const model = cfg.model || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  if (!apiKey) throw new Error('Gemini API key missing');
+
+  // Create Gemini model instance
+  const geminiModel = google(model, { apiKey });
+
+  const summarize = async (text) => {
+    console.log('[GEMINI] Summarizing text length:', text.length);
+    try {
+      const { text: result } = await generateText({
+        model: geminiModel,
+        system: 'You are a concise, structured note-taker.',
+        prompt: `Summarize clearly in ≤1 short paragraph:\n\n${text}`,
+        temperature: 0.2
+      });
+      console.log('[GEMINI] Summary generated successfully, length:', result.length);
+      return result.trim();
+    } catch (error) {
+      console.error('[GEMINI] Summarize error:', error.message);
+      throw new Error(`Gemini summarize failed: ${error.message}`);
+    }
+  };
+
+  const extractActions = async (text) => {
+    console.log('[GEMINI] Extracting actions from text length:', text.length);
+    try {
+      const { text: content } = await generateText({
+        model: geminiModel,
+        system: 'Return only raw JSON without code blocks or formatting.',
+        prompt: `Extract action items as JSON exactly:
+{ "actions": [ { "title": string, "owner": string|null, "due": string|null, "ts": number|null } ] }
+Transcript:
+${text}`,
+        temperature: 0.0
+      });
+      console.log('[GEMINI] Actions response:', content.substring(0, 200));
+      try { 
+        // Clean markdown code blocks if present
+        const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const obj = JSON.parse(cleanContent); 
+        return Array.isArray(obj.actions) ? obj.actions : []; 
+      } catch (parseError) { 
+        console.error('[GEMINI] Action JSON parse error:', parseError.message, 'Content:', content);
+        return []; 
+      }
+    } catch (error) {
+      console.error('[GEMINI] Extract actions error:', error.message);
+      return [];
+    }
+  };
+
+  const keywords = async (text) => {
+    console.log('[GEMINI] Extracting keywords from text length:', text.length);
+    try {
+      const { text: content } = await generateText({
+        model: geminiModel,
+        system: 'Return only raw JSON without code blocks or formatting.',
+        prompt: `Return JSON { "keywords": [string] } with 3–8 concise keywords:\n${text}`,
+        temperature: 0.0
+      });
+      console.log('[GEMINI] Keywords response:', content.substring(0, 200));
+      try { 
+        // Clean markdown code blocks if present
+        const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const obj = JSON.parse(cleanContent); 
+        return Array.isArray(obj.keywords) ? obj.keywords : []; 
+      } catch (parseError) { 
+        console.error('[GEMINI] Keywords JSON parse error:', parseError.message, 'Content:', content);
+        return []; 
+      }
+    } catch (error) {
+      console.error('[GEMINI] Extract keywords error:', error.message);
+      return [];
+    }
+  };
+
+  const embed = async () => { throw new Error('Embeddings not provided by Gemini provider here'); };
+  return { summarize, extractActions, keywords, embed };
+}
+
 /* ---------------- Hybrids ---------------- */
 function hybridOpenAI(cfg)      { return combine(xenovaEmbeddingsProvider(), openAIProvider(cfg)); }
 function hybridOpenRouter(cfg)  { return combine(xenovaEmbeddingsProvider(), openRouterProvider(cfg)); }
+function hybridGemini(cfg)      { return combine(xenovaEmbeddingsProvider(), geminiProvider(cfg)); }
 
 function combine(emb, llm) {
   return {
