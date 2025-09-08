@@ -21,6 +21,13 @@
             <span class="record-text" id="record-text">Start</span>
           </button>
           
+          <!-- Mic Booster -->
+          <div class="mic-booster" id="mic-booster">
+            <label for="mic-gain-slider" class="mic-label">Mic</label>
+            <input type="range" id="mic-gain-slider" min="1" max="5" step="0.1" value="1" class="gain-slider">
+            <span class="gain-value" id="gain-value">1.0x</span>
+          </div>
+          
           <!-- Connection status -->
           <div class="connection-status" id="connection-status">
             <div class="status-dot" id="status-dot"></div>

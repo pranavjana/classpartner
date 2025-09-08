@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeContextMenu();
   initializeDragFunctionality();
   initializeTranscription();
+  initializeMicGain();
   updateAlwaysOnTopStatus();
   initializeAIProcessing();
 });
@@ -207,6 +208,8 @@ function createBrowserAudioService() {
         });
         
         this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
+        this.gainNode = this.audioContext.createGain();
+        this.gainNode.gain.value = window.micGain || 1.0;
         this.processor = this.audioContext.createScriptProcessor(1024, 1, 1); // Reduced buffer size
         
         this.processor.onaudioprocess = (event) => {
@@ -226,7 +229,8 @@ function createBrowserAudioService() {
           }
         };
         
-        this.source.connect(this.processor);
+        this.source.connect(this.gainNode);
+        this.gainNode.connect(this.processor);
         this.processor.connect(this.audioContext.destination);
         
         this.isRecording = true;
@@ -249,6 +253,10 @@ function createBrowserAudioService() {
       if (this.source) {
         this.source.disconnect();
         this.source = null;
+      }
+      if (this.gainNode) {
+        this.gainNode.disconnect();
+        this.gainNode = null;
       }
       if (this.audioContext && this.audioContext.state !== 'closed') {
         this.audioContext.close();
@@ -865,4 +873,36 @@ function initializeAIProcessing() {
       }
     });
   }
+}
+
+// Initialize mic gain slider
+function initializeMicGain() {
+  const gainSlider = document.getElementById('mic-gain-slider');
+  const gainValue = document.getElementById('gain-value');
+  
+  if (!gainSlider || !gainValue) return;
+  
+  // Initialize global mic gain
+  window.micGain = parseFloat(gainSlider.value) || 1.0;
+  
+  // Update display
+  function updateGainDisplay() {
+    const gain = parseFloat(gainSlider.value);
+    gainValue.textContent = `${gain.toFixed(1)}x`;
+    window.micGain = gain;
+    
+    // Update gain node if recording
+    if (audioService && audioService.gainNode) {
+      audioService.gainNode.gain.value = gain;
+      console.log('[MIC GAIN] Updated to:', gain);
+    }
+  }
+  
+  // Slider event listener
+  gainSlider.addEventListener('input', updateGainDisplay);
+  
+  // Initial display update
+  updateGainDisplay();
+  
+  console.log('[MIC GAIN] Initialized with gain:', window.micGain);
 }
