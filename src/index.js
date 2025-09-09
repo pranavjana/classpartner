@@ -53,11 +53,7 @@ function setupIpcHandlers() {
     return mainWindow ? mainWindow.getBounds() : null;
   });
 
-  ipcMain.on('window-move', (event, deltaX, deltaY) => {
-    if (!mainWindow) return;
-    const [currentX, currentY] = mainWindow.getPosition();
-    mainWindow.setPosition(currentX + deltaX, currentY + deltaY);
-  });
+  // Removed custom window-move handler - using native Electron dragging
 
   ipcMain.on('window-resize', (event, width, height) => {
     if (!mainWindow) return;
@@ -199,20 +195,26 @@ function ensureAiPipeline() {
   });
 
   // Configure provider (keys remain in main)
-  const provider = process.env.AI_PROVIDER || 'openai';
-  const apiKey = process.env.OPENAI_API_KEY || null;
+  const provider = process.env.AI_PROVIDER || 'hybrid-gemini';
 
-  console.log('[AI CONFIG main] openai key present:', !!process.env.OPENAI_API_KEY,
+  console.log('[AI CONFIG main] gemini key present:', !!process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+            'openai key present:', !!process.env.OPENAI_API_KEY,
             'openrouter key present:', !!process.env.OPENROUTER_API_KEY);
 
   // Only set provider if we have at least a key for the selected provider
   aiPipeline.setProviderConfig({
-    provider: process.env.AI_PROVIDER || 'hybrid-openai', // primary=openai, backup=openrouter
+    provider: process.env.AI_PROVIDER || 'hybrid-gemini', // primary=gemini, backup=openai
 
-    // OpenAI (primary chat)
+    // Gemini (primary chat)
+    geminiApiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+
+    // OpenAI (backup chat)
     openaiApiKey: process.env.OPENAI_API_KEY,
+    openaiBaseUrl: process.env.OPENAI_BASE_URL,
+    openaiModel: process.env.OPENAI_MODEL,
 
-    // OpenRouter (backup chat)
+    // OpenRouter (fallback)
     openrouterApiKey: process.env.OPENROUTER_API_KEY,
     baseUrl:  process.env.OPENROUTER_BASE,
     model:    process.env.OPENROUTER_MODEL,
@@ -220,7 +222,7 @@ function ensureAiPipeline() {
     title:    process.env.OPENROUTER_TITLE   || 'Classroom Assistant',
   });
 
-console.log('[AI CONFIG main] openai:', !!process.env.OPENAI_API_KEY, 'openrouter:', !!process.env.OPENROUTER_API_KEY);
+console.log('[AI CONFIG main] gemini:', !!process.env.GOOGLE_GENERATIVE_AI_API_KEY, 'openai:', !!process.env.OPENAI_API_KEY, 'openrouter:', !!process.env.OPENROUTER_API_KEY);
 
 
 
