@@ -787,3 +787,58 @@ body {
 .debug-entry.info {
   color: rgba(59, 130, 246, 0.8);
 }
+
+.qa-panel {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  left: 12px;      /* make it full-width on small windows; tweak as you like */
+  backdrop-filter: blur(6px);
+  background: rgba(20,20,20,0.35);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.qa-row {
+  display: flex;
+  gap: 8px;
+}
+
+.qa-input {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(0,0,0,0.25);
+  color: #fff;
+  outline: none;
+}
+
+.qa-input::placeholder { color: rgba(255,255,255,0.55); }
+
+.qa-btn {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  cursor: pointer;
+}
+
+.qa-btn:hover { background: rgba(255,255,255,0.12); }
+
+.qa-results {
+  margin-top: 8px;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  color: #fff;
+}
+
+.qa-answer { margin-bottom: 6px; }
+.qa-muted  { color: rgba(255,255,255,0.7); font-style: italic; }
+.qa-list   { list-style: disc; padding-left: 1.25rem; margin: 6px 0 0 0; }
+.qa-snippet { cursor: pointer; }
+.qa-snippet:hover { text-decoration: underline; }

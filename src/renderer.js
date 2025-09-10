@@ -906,3 +906,73 @@ function initializeMicGain() {
   
   console.log('[MIC GAIN] Initialized with gain:', window.micGain);
 }
+
+function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function renderQAResult(container, res) {
+  if (!res || !res.success) {
+    container.innerHTML = `<div class="qa-muted">Error: ${esc(res?.error || 'Unknown error')}</div>`;
+    return;
+  }
+  const { mode, answer, snippets } = res;
+  const header = (mode === 'qa' && answer)
+    ? `<div class="qa-answer">${esc(answer)}</div>`
+    : `<div class="qa-muted">Showing relevant snippets while the model cools down.</div>`;
+
+  // snippets is newline-separated lines from the worker; we’ll also request raw ranges next
+  const items = (snippets || '').split('\n').filter(Boolean).map((line, i) => {
+    return `<li class="qa-snippet" data-i="${i}">${esc(line)}</li>`;
+  }).join('');
+
+  container.innerHTML = `${header}<ul class="qa-list">${items}</ul>`;
+
+  // Optional: if you later include raw time ranges, wire click to jump
+  container.querySelectorAll('.qa-snippet').forEach((li) => {
+    li.addEventListener('click', () => {
+      // If you extend worker to return raw times, pass them here. For now this emits a generic event.
+      window.bus?.jumpTo?.({ startMs: null, endMs: null }); 
+    });
+  });
+}
+
+function setupQnABox() {
+  const input = document.getElementById('qa-input');
+  const btn   = document.getElementById('qa-btn');
+  const out   = document.getElementById('qa-results');
+  if (!input || !btn || !out) return;
+
+  let busy = false;
+  async function ask(mode) {
+    if (busy) return;
+    const q = (input.value || '').trim();
+    if (!q) return;
+    busy = true;
+    out.innerHTML = `<div class="qa-muted">Asking…</div>`;
+    try {
+      const res = await window.api.invoke('ai:query', { query: q, opts: { k: 6, mode } });
+      renderQAResult(out, res);
+    } catch (e) {
+      renderQAResult(out, { success: false, error: String(e?.message ?? e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      // Cmd/Ctrl+Enter forces snippets-only (useful if throttled)
+      const forceSnippets = e.metaKey || e.ctrlKey;
+      ask(forceSnippets ? 'snippets' : undefined);
+    }
+  });
+  btn.addEventListener('click', () => ask(undefined));
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  setupQnABox();
+
+  // Optional: see AI worker traffic while testing
+  window.ai?.onLog?.(m => console.log('[ai log]', m));
+  window.ai?.onError?.(e => console.warn('[ai error]', e));
+  window.ai?.onUpdate?.(p => console.log('[ai update]', p));
+});
