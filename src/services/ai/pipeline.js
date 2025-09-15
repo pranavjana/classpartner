@@ -8,7 +8,7 @@ class AIPipeline extends EventEmitter {
     super();
     this.worker = new Worker(path.join(__dirname, 'aiWorker.js'), {
       workerData: {
-        // tune these if you like
+
         summaryWindowMs: opts.summaryWindowMs ?? 60_000,   // rolling window
         minSummarizeEveryMs: opts.minSummarizeEveryMs ?? 12_000, // throttle summaries
       }
