@@ -5,6 +5,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('api', {
+  invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),  // generic invoker
+});
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
   closeWindow: () => ipcRenderer.invoke('window-close'),
@@ -81,7 +85,11 @@ contextBridge.exposeInMainWorld('ai', {
   selftest: () => ipcRenderer.invoke('ai:selftest'), // NEW
 });
 
-
+contextBridge.exposeInMainWorld('bus', {
+  jumpTo: (msRange) => window.dispatchEvent(new CustomEvent('qa:jump', { detail: msRange })),
+  // you already had sendFinal; keep it
+  sendFinal: (seg) => ipcRenderer.send('transcript:final', seg),
+});
 
 // --- Optional window utils you already had ---
 contextBridge.exposeInMainWorld('windowCtl', {

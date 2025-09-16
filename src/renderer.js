@@ -15,7 +15,9 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeContextMenu();
   initializeDragFunctionality();
   initializeTranscription();
+  initializeMicGain();
   updateAlwaysOnTopStatus();
+  initializeAIProcessing();
 });
 
 function initializeWindowControls() {
@@ -74,44 +76,9 @@ function initializeContextMenu() {
 }
 
 function initializeDragFunctionality() {
-  const headerBar = document.getElementById('header-bar');
-  const overlayContainer = document.querySelector('.overlay-container');
-
-  // Mouse down on header starts drag
-  headerBar.addEventListener('mousedown', (e) => {
-    // Don't start drag if clicking on buttons
-    if (e.target.closest('.control-btn')) return;
-    
-    isDragging = true;
-    dragOffset.x = e.clientX;
-    dragOffset.y = e.clientY;
-    overlayContainer.classList.add('dragging');
-    
-    // Prevent text selection during drag
-    e.preventDefault();
-  });
-
-  // Handle drag movement
-  document.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    
-    const deltaX = e.clientX - dragOffset.x;
-    const deltaY = e.clientY - dragOffset.y;
-    
-    // Move window via IPC (this will be handled in main process)
-    window.electronAPI.moveWindow(deltaX, deltaY);
-    
-    dragOffset.x = e.clientX;
-    dragOffset.y = e.clientY;
-  });
-
-  // End drag on mouse up
-  document.addEventListener('mouseup', () => {
-    if (isDragging) {
-      isDragging = false;
-      overlayContainer.classList.remove('dragging');
-    }
-  });
+  // Using native Electron dragging via CSS -webkit-app-region: drag
+  // No custom JavaScript dragging needed
+  console.log('[DRAG] Using native Electron window dragging');
 }
 
 function showContextMenu(x, y) {
@@ -241,6 +208,8 @@ function createBrowserAudioService() {
         });
         
         this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
+        this.gainNode = this.audioContext.createGain();
+        this.gainNode.gain.value = window.micGain || 1.0;
         this.processor = this.audioContext.createScriptProcessor(1024, 1, 1); // Reduced buffer size
         
         this.processor.onaudioprocess = (event) => {
@@ -260,7 +229,8 @@ function createBrowserAudioService() {
           }
         };
         
-        this.source.connect(this.processor);
+        this.source.connect(this.gainNode);
+        this.gainNode.connect(this.processor);
         this.processor.connect(this.audioContext.destination);
         
         this.isRecording = true;
@@ -283,6 +253,10 @@ function createBrowserAudioService() {
       if (this.source) {
         this.source.disconnect();
         this.source = null;
+      }
+      if (this.gainNode) {
+        this.gainNode.disconnect();
+        this.gainNode = null;
       }
       if (this.audioContext && this.audioContext.state !== 'closed') {
         this.audioContext.close();
@@ -634,16 +608,14 @@ document.addEventListener('dragstart', (e) => {
 });
 
 // Add some debugging for development
-if (process.env.NODE_ENV === 'development') {
-  console.log('Classroom Assistant Overlay initialized');
-  
-  // Add development shortcuts
-  document.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.shiftKey && e.key === 'D') {
-      console.log('Development mode active');
-    }
-  });
-}
+console.log('Classroom Assistant Overlay initialized');
+
+// Add development shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+    console.log('Development mode active');
+  }
+});
 
 // Setup resize handles for frameless window
 function setupResizeHandles() {
@@ -728,3 +700,279 @@ window.ai?.onUpdate?.((payload) => {
 
 // Initialize resize handles
 setupResizeHandles();
+
+// AI Processing Functions
+function initializeAIProcessing() {
+  const aiStatusDot = document.getElementById('ai-status-dot');
+  const aiStatusText = document.getElementById('ai-status-text');
+  const debugLog = document.getElementById('debug-log');
+
+  // Debug logging function
+  function addDebugEntry(message, type = 'info') {
+    const entry = document.createElement('div');
+    entry.className = `debug-entry ${type}`;
+    entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    debugLog.appendChild(entry);
+    debugLog.scrollTop = debugLog.scrollHeight;
+    
+    // Keep only last 50 entries
+    while (debugLog.children.length > 50) {
+      debugLog.removeChild(debugLog.firstChild);
+    }
+  }
+
+  // Update AI status
+  function updateAIStatus(status, message) {
+    aiStatusDot.className = `ai-status-dot ${status}`;
+    aiStatusText.textContent = message;
+  }
+
+  // AI availability check
+  if (window.ai && window.ai.availability) {
+    window.ai.availability().then(result => {
+      addDebugEntry(`AI configured: ${result.configured}, provider: ${result.provider}`, 'info');
+      if (result.configured) {
+        updateAIStatus('active', 'Ready');
+        addDebugEntry('AI pipeline ready', 'success');
+      } else {
+        updateAIStatus('error', 'Not configured');
+        addDebugEntry('AI not configured - check API keys', 'error');
+      }
+    }).catch(err => {
+      addDebugEntry(`AI availability check failed: ${err.message}`, 'error');
+      updateAIStatus('error', 'Error');
+    });
+  } else {
+    addDebugEntry('AI API not available', 'error');
+    updateAIStatus('error', 'Unavailable');
+  }
+
+  // AI event listeners
+  if (window.ai) {
+    // AI Update events (summaries, actions, keywords)
+    window.ai.onUpdate((payload) => {
+      addDebugEntry('AI update received', 'success');
+      updateAIStatus('active', 'Processing complete');
+      
+      // Update summary
+      const summaryEl = document.getElementById('ai-summary');
+      if (payload.summary && summaryEl) {
+        summaryEl.textContent = payload.summary;
+        summaryEl.classList.remove('placeholder');
+      }
+
+      // Update actions
+      const actionsEl = document.getElementById('ai-actions');
+      if (payload.actions && actionsEl) {
+        actionsEl.innerHTML = '';
+        if (payload.actions.length > 0) {
+          payload.actions.forEach(action => {
+            const li = document.createElement('li');
+            li.textContent = action.title;
+            if (action.owner) li.textContent += ` — ${action.owner}`;
+            if (action.due) li.textContent += ` (due ${action.due})`;
+            actionsEl.appendChild(li);
+          });
+        } else {
+          const li = document.createElement('li');
+          li.className = 'placeholder';
+          li.textContent = 'No action items detected';
+          actionsEl.appendChild(li);
+        }
+      }
+
+      // Update keywords
+      const keywordsEl = document.getElementById('ai-keywords');
+      if (payload.keywords && keywordsEl) {
+        keywordsEl.innerHTML = '';
+        if (payload.keywords.length > 0) {
+          payload.keywords.forEach(keyword => {
+            const span = document.createElement('span');
+            span.className = 'tag';
+            span.textContent = keyword;
+            keywordsEl.appendChild(span);
+          });
+        } else {
+          const span = document.createElement('span');
+          span.className = 'tag placeholder';
+          span.textContent = 'No keywords yet';
+          keywordsEl.appendChild(span);
+        }
+      }
+
+      addDebugEntry(`Summary: ${payload.summary?.substring(0, 50)}...`, 'info');
+      addDebugEntry(`Actions: ${payload.actions?.length || 0}, Keywords: ${payload.keywords?.length || 0}`, 'info');
+    });
+
+    // AI Log events (debug information)
+    window.ai.onLog((logData) => {
+      addDebugEntry(logData.message || JSON.stringify(logData), 'info');
+      
+      if (logData.message?.includes('LLM primary=gemini')) {
+        updateAIStatus('active', 'Gemini active');
+      }
+    });
+
+    // AI Error events
+    window.ai.onError((errorData) => {
+      const errorMsg = errorData.message || JSON.stringify(errorData);
+      addDebugEntry(`Error: ${errorMsg}`, 'error');
+      updateAIStatus('error', 'Processing error');
+      
+      // Show error in summary if it's a critical error
+      if (errorMsg.includes('API') || errorMsg.includes('key')) {
+        const summaryEl = document.getElementById('ai-summary');
+        if (summaryEl) {
+          summaryEl.textContent = `API Error: ${errorMsg.substring(0, 100)}...`;
+          summaryEl.style.color = 'rgba(239, 68, 68, 0.8)';
+        }
+      }
+    });
+
+    // Run initial self-test
+    setTimeout(async () => {
+      try {
+        addDebugEntry('Running AI self-test...', 'info');
+        updateAIStatus('processing', 'Testing...');
+        
+        const result = await window.ai.selftest();
+        
+        if (result.success) {
+          addDebugEntry('Self-test passed!', 'success');
+          updateAIStatus('active', 'Self-test passed');
+        } else {
+          addDebugEntry(`Self-test failed: ${result.error}`, 'error');
+          updateAIStatus('error', 'Self-test failed');
+        }
+      } catch (err) {
+        addDebugEntry(`Self-test error: ${err.message}`, 'error');
+        updateAIStatus('error', 'Test error');
+      }
+    }, 2000);
+  }
+
+  // Listen for transcription events to update AI status
+  if (window.transcription) {
+    let lastTranscriptTime = 0;
+    
+    window.transcription.onData((data) => {
+      if (data.is_final && data.text?.trim()) {
+        lastTranscriptTime = Date.now();
+        updateAIStatus('processing', 'Analyzing...');
+        addDebugEntry(`Processing: "${data.text.substring(0, 30)}..."`, 'info');
+        
+        // Reset status after 15 seconds if no AI update
+        setTimeout(() => {
+          if (Date.now() - lastTranscriptTime > 14000) {
+            const currentStatus = aiStatusDot.className;
+            if (currentStatus.includes('processing')) {
+              updateAIStatus('active', 'Waiting...');
+            }
+          }
+        }, 15000);
+      }
+    });
+  }
+}
+
+// Initialize mic gain slider
+function initializeMicGain() {
+  const gainSlider = document.getElementById('mic-gain-slider');
+  const gainValue = document.getElementById('gain-value');
+  
+  if (!gainSlider || !gainValue) return;
+  
+  // Initialize global mic gain
+  window.micGain = parseFloat(gainSlider.value) || 1.0;
+  
+  // Update display
+  function updateGainDisplay() {
+    const gain = parseFloat(gainSlider.value);
+    gainValue.textContent = `${gain.toFixed(1)}x`;
+    window.micGain = gain;
+    
+    // Update gain node if recording
+    if (audioService && audioService.gainNode) {
+      audioService.gainNode.gain.value = gain;
+      console.log('[MIC GAIN] Updated to:', gain);
+    }
+  }
+  
+  // Slider event listener
+  gainSlider.addEventListener('input', updateGainDisplay);
+  
+  // Initial display update
+  updateGainDisplay();
+  
+  console.log('[MIC GAIN] Initialized with gain:', window.micGain);
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function renderQAResult(container, res) {
+  if (!res || !res.success) {
+    container.innerHTML = `<div class="qa-muted">Error: ${esc(res?.error || 'Unknown error')}</div>`;
+    return;
+  }
+  const { mode, answer, snippets } = res;
+  const header = (mode === 'qa' && answer)
+    ? `<div class="qa-answer">${esc(answer)}</div>`
+    : `<div class="qa-muted">Showing relevant snippets while the model cools down.</div>`;
+
+  // snippets is newline-separated lines from the worker; we’ll also request raw ranges next
+  const items = (snippets || '').split('\n').filter(Boolean).map((line, i) => {
+    return `<li class="qa-snippet" data-i="${i}">${esc(line)}</li>`;
+  }).join('');
+
+  container.innerHTML = `${header}<ul class="qa-list">${items}</ul>`;
+
+  // Optional: if you later include raw time ranges, wire click to jump
+  container.querySelectorAll('.qa-snippet').forEach((li) => {
+    li.addEventListener('click', () => {
+      // If you extend worker to return raw times, pass them here. For now this emits a generic event.
+      window.bus?.jumpTo?.({ startMs: null, endMs: null }); 
+    });
+  });
+}
+
+function setupQnABox() {
+  const input = document.getElementById('qa-input');
+  const btn   = document.getElementById('qa-btn');
+  const out   = document.getElementById('qa-results');
+  if (!input || !btn || !out) return;
+
+  let busy = false;
+  async function ask(mode) {
+    if (busy) return;
+    const q = (input.value || '').trim();
+    if (!q) return;
+    busy = true;
+    out.innerHTML = `<div class="qa-muted">Asking…</div>`;
+    try {
+      const res = await window.api.invoke('ai:query', { query: q, opts: { k: 6, mode } });
+      renderQAResult(out, res);
+    } catch (e) {
+      renderQAResult(out, { success: false, error: String(e?.message ?? e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      // Cmd/Ctrl+Enter forces snippets-only (useful if throttled)
+      const forceSnippets = e.metaKey || e.ctrlKey;
+      ask(forceSnippets ? 'snippets' : undefined);
+    }
+  });
+  btn.addEventListener('click', () => ask(undefined));
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  setupQnABox();
+
+  // Optional: see AI worker traffic while testing
+  window.ai?.onLog?.(m => console.log('[ai log]', m));
+  window.ai?.onError?.(e => console.warn('[ai error]', e));
+  window.ai?.onUpdate?.(p => console.log('[ai update]', p));
+});

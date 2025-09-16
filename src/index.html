@@ -21,6 +21,13 @@
             <span class="record-text" id="record-text">Start</span>
           </button>
           
+          <!-- Mic Booster -->
+          <div class="mic-booster" id="mic-booster">
+            <label for="mic-gain-slider" class="mic-label">Mic</label>
+            <input type="range" id="mic-gain-slider" min="1" max="5" step="0.1" value="1" class="gain-slider">
+            <span class="gain-value" id="gain-value">1.0x</span>
+          </div>
+          
           <!-- Connection status -->
           <div class="connection-status" id="connection-status">
             <div class="status-dot" id="status-dot"></div>
@@ -75,6 +82,45 @@
           </div>
           <span class="audio-level-text" id="audio-level-text">0%</span>
         </div>
+
+        <!-- AI Summary Panel -->
+        <div class="ai-panel" id="ai-panel">
+          <div class="ai-header">
+            <span class="ai-title">AI Analysis</span>
+            <div class="ai-status" id="ai-status">
+              <div class="ai-status-dot" id="ai-status-dot"></div>
+              <span id="ai-status-text">Initializing...</span>
+            </div>
+          </div>
+          
+          <div class="ai-content" id="ai-content">
+            <div class="ai-section">
+              <h4>Summary</h4>
+              <div class="ai-summary" id="ai-summary">Waiting for conversation...</div>
+            </div>
+            
+            <div class="ai-section">
+              <h4>Action Items</h4>
+              <ul class="ai-actions" id="ai-actions">
+                <li class="placeholder">No action items detected</li>
+              </ul>
+            </div>
+            
+            <div class="ai-section">
+              <h4>Keywords</h4>
+              <div class="ai-keywords" id="ai-keywords">
+                <span class="tag placeholder">No keywords yet</span>
+              </div>
+            </div>
+
+            <div class="ai-debug" id="ai-debug">
+              <h4>Debug Info</h4>
+              <div class="debug-log" id="debug-log">
+                <div class="debug-entry">AI pipeline initializing...</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
       
       <!-- Resize handles -->
@@ -90,7 +136,15 @@
         <span class="check-mark" id="always-on-top-check">✓</span>
       </div>
     </div>
-
+    
+    <!-- Q&A Box -->
+    <div id="qa-panel" class="qa-panel">
+      <div class="qa-row">
+        <input id="qa-input" class="qa-input" type="text" placeholder="Ask about what was just said…" />
+        <button id="qa-btn" class="qa-btn" title="Ask">Ask</button>
+      </div>
+      <div id="qa-results" class="qa-results"></div>
+    </div>
     <script src="renderer.js"></script>
   </body>
 </html>
