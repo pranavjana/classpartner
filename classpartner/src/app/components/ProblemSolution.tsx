@@ -1,23 +1,30 @@
+import Reveal from "./Reveal";
+
 export default function ProblemSolution() {
   return (
     <section className="mx-auto max-w-7xl px-6">
       <div className="grid gap-8 md:grid-cols-2">
+        <Reveal>
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
           <h2 className="text-xl font-semibold">The old way</h2>
           <ul className="mt-4 list-disc space-y-2 pl-5 text-gray-300">
-            <li>Rewatching 2× speed, still hunting the right minute.</li>
-            <li>Questions pile up; replies arrive after class ends.</li>
-            <li>Notes scatter across slides, screenshots and tabs.</li>
+            <li>You spend hours pausing/replaying videos</li>
+            <li>You pay constant attention to catch key points</li>
+            <li>Unanswered questions stay unanswered</li>
           </ul>
         </div>
+        </Reveal>
+
+        <Reveal delay={0.1}>
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
           <h2 className="text-xl font-semibold">The ClassPartner way</h2>
           <ul className="mt-4 list-disc space-y-2 pl-5 text-gray-300">
-            <li>Live transcript that’s searchable as the lecture runs.</li>
-            <li>Ask anything; get grounded answers with timestamps.</li>
-            <li>Auto highlights and clean notes you can export.</li>
+            <li>Record directly through your laptop microphone — no uploads, no hassle.</li>
+            <li>Ask questions live while the class runs.</li>
+            <li>Get instant answers grounded in the spoken lecture.</li>
           </ul>
         </div>
+        </Reveal>
       </div>
     </section>
   );

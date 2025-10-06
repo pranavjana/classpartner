@@ -4,7 +4,6 @@ import ProblemSolution from "./components/ProblemSolution";
 import Features from "./components/features";
 import HowItWorks from "./components/HowitWorks";
 import SocialProof from "./components/SocialProof";
-import Pricing from "./components/pricing";
 import FAQ from "./components/FAQ";
 import Footer from "./components/footer";
 
@@ -18,7 +17,6 @@ export default function Home() {
         <Features />
         <HowItWorks />
         <SocialProof />
-        <Pricing />
         <FAQ />
       </main>
       <Footer />
