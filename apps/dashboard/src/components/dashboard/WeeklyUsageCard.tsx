@@ -1,0 +1,65 @@
+"use client";
+
+import * as React from "react";
+import { ResponsiveContainer, AreaChart, Area, XAxis, Tooltip as RTooltip } from "recharts";
+
+const chartData = [
+  { d: "Mon", duration: 2.1 },
+  { d: "Tue", duration: 3.5 },
+  { d: "Wed", duration: 1.8 },
+  { d: "Thu", duration: 2.9 },
+  { d: "Fri", duration: 4.2 },
+  { d: "Sat", duration: 1.2 },
+  { d: "Sun", duration: 0.8 },
+];
+
+export default function WeeklyUsageCard({ className = "" }: { className?: string }) {
+  return (
+    <div className={`relative bg-card border border-border rounded-2xl overflow-hidden ${className}`}>
+      <div className="p-6 pb-0">
+        <h2 className="text-lg font-semibold">Weekly Usage</h2>
+        <p className="text-sm text-muted-foreground">Total hours transcribed.</p>
+      </div>
+
+      <div className="h-[220px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={chartData} margin={{ top: 12, right: 12, left: 12, bottom: 12 }}>
+            <defs>
+              <linearGradient id="usageGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="currentColor" stopOpacity={0.15} />
+                <stop offset="95%" stopColor="currentColor" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <Area
+              type="monotone"
+              dataKey="duration"
+              stroke="currentColor"
+              strokeWidth={2}
+              fill="url(#usageGradient)"
+            />
+            <XAxis
+              dataKey="d"
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 11 }}
+              stroke="hsl(var(--muted-foreground))"
+            />
+            <RTooltip
+              cursor={{ strokeDasharray: "3 3" }}
+              content={({ payload }) => {
+                if (payload && payload.length) {
+                  return (
+                    <div className="p-2 bg-popover text-popover-foreground border border-border rounded-md text-xs">
+                      {`${payload[0].payload.d}: ${payload[0].value} hrs`}
+                    </div>
+                  );
+                }
+                return null;
+              }}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
