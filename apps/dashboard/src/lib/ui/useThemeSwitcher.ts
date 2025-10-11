@@ -1,20 +1,39 @@
 "use client";
 import * as React from "react";
+import { applyThemeSetting } from "@/lib/ui/theme";
+
+const STORAGE_KEY = "app.generalSettings.v1";
 
 export function useThemeSwitcher() {
-  const [theme, setTheme] = React.useState<"light" | "dark" | "system">("system");
+  const [theme, setThemeState] = React.useState<"light" | "dark" | "system">("system");
 
   React.useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "system") {
-      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      root.classList.toggle("dark", prefersDark);
-      root.removeAttribute("data-theme");
-    } else {
-      root.classList.toggle("dark", theme === "dark");
-      root.setAttribute("data-theme", theme === "dark" ? "brand-dark" : "brand");
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        applyThemeSetting("system");
+        return;
+      }
+      const parsed = JSON.parse(raw) as { theme?: "light" | "dark" | "system" };
+      const storedTheme = parsed.theme ?? "system";
+      setThemeState(storedTheme);
+      applyThemeSetting(storedTheme);
+    } catch {
+      applyThemeSetting("system");
     }
-  }, [theme]);
+  }, []);
+
+  const setTheme = React.useCallback((next: "light" | "dark" | "system") => {
+    setThemeState(next);
+    applyThemeSetting(next);
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, theme: next }));
+    } catch {
+      // ignore persistence errors
+    }
+  }, []);
 
   return { theme, setTheme };
 }
