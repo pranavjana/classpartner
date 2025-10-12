@@ -2,23 +2,33 @@
 
 import * as React from "react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, Tooltip as RTooltip } from "recharts";
-
-const chartData = [
-  { d: "Mon", duration: 2.1 },
-  { d: "Tue", duration: 3.5 },
-  { d: "Wed", duration: 1.8 },
-  { d: "Thu", duration: 2.9 },
-  { d: "Fri", duration: 4.2 },
-  { d: "Sat", duration: 1.2 },
-  { d: "Sun", duration: 0.8 },
-];
+import { addDays, format, isSameDay, parseISO, subDays } from "date-fns";
+import { useDashboardData } from "@/lib/dashboard/provider";
 
 export default function WeeklyUsageCard({ className = "" }: { className?: string }) {
+  const { transcriptions } = useDashboardData();
+
+  const chartData = React.useMemo(() => {
+    const today = new Date();
+    const start = subDays(today, 6);
+    return Array.from({ length: 7 }).map((_, index) => {
+      const current = addDays(start, index);
+      const totalMinutes = transcriptions
+        .filter((tx) => isSameDay(current, parseISO(tx.createdAt)))
+        .reduce((acc, tx) => acc + (tx.durationMinutes ?? 0), 0);
+      const hours = Math.round((totalMinutes / 60) * 10) / 10;
+      return {
+        d: format(current, "EEE"),
+        duration: hours,
+      };
+    });
+  }, [transcriptions]);
+
   return (
     <div className={`relative bg-card border border-border rounded-2xl overflow-hidden ${className}`}>
       <div className="p-6 pb-0">
         <h2 className="text-lg font-semibold">Weekly Usage</h2>
-        <p className="text-sm text-muted-foreground">Total hours transcribed.</p>
+        <p className="text-sm text-muted-foreground">Total hours transcribed over the past seven days.</p>
       </div>
 
       <div className="h-[220px]">

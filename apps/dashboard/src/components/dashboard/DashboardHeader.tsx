@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Mic, Search, Bell } from "lucide-react";
+import { Mic, Search, Bell, CalendarDays, NotebookPen, Settings2, Download } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +22,8 @@ import {
 } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useThemeSwitcher } from "@/lib/ui/useThemeSwitcher";
+import { useTranscriptionLauncher } from "@/lib/transcription/use-launcher";
+import { openGeneralSettingsDialog } from "@/components/sidebar/GeneralSettingsDialogue";
 
 export default function DashboardHeader({
   onNewTranscription,
@@ -28,42 +31,15 @@ export default function DashboardHeader({
   onNewTranscription?: () => void | Promise<void>;
 }) {
   const { setTheme } = useThemeSwitcher();
-  const [launching, setLaunching] = React.useState(false);
-
-  const launchNew = React.useCallback(async () => {
-    if (launching) return;
-    setLaunching(true);
-    try {
-      // 1) If parent provided a handler, use that
-      if (onNewTranscription) {
-        await onNewTranscription();
-        return;
-      }
-
-      // 2) Use Electron preload bridge only (no deep-link fallback)
-      const desktop = typeof window !== "undefined" ? window.desktop : undefined;
-
-      if (desktop?.openOverlay) {
-        await desktop.openOverlay();
-        await desktop.startTranscription?.();
-        return;
-      }
-
-      // 3) Not running inside the desktop shell
-      alert("Please run the desktop app to start a transcription.");
-    } catch (e) {
-      console.error("Failed to launch new transcription:", e);
-    } finally {
-      setLaunching(false);
-    }
-  }, [onNewTranscription, launching]);
+  const { launch, launching } = useTranscriptionLauncher({ onLaunch: onNewTranscription });
+  const router = useRouter();
 
   return (
     <header className="sticky top-0 z-30 bg-background/70 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-b border-border">
       <div className="mx-auto max-w-7xl px-4 py-3 flex items-center gap-3">
         <SidebarTrigger className="-ml-1.5" />
 
-        <Button onClick={launchNew} className="rounded-full" disabled={launching} aria-busy={launching}>
+        <Button onClick={launch} className="rounded-full" disabled={launching} aria-busy={launching}>
           <Mic className="w-4 h-4 mr-2" />
           {launching ? "Starting…" : "New Transcription"}
         </Button>
@@ -77,6 +53,72 @@ export default function DashboardHeader({
               aria-label="Search"
             />
           </div>
+        </div>
+
+        <div className="hidden lg:flex items-center gap-2 pr-2">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="gap-1 rounded-full border border-border px-3 text-xs"
+                  onClick={() => router.push("/calendar")}
+                >
+                  <CalendarDays className="h-3.5 w-3.5" />
+                  Calendar
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Jump to the calendar</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="gap-1 rounded-full border border-border px-3 text-xs"
+                  onClick={() => router.push("/transcriptions/new")}
+                >
+                  <NotebookPen className="h-3.5 w-3.5" />
+                  Manual note
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Create a manual transcription draft</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="gap-1 rounded-full border border-border px-3 text-xs"
+                  onClick={() => openGeneralSettingsDialog()}
+                >
+                  <Settings2 className="h-3.5 w-3.5" />
+                  Settings
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Open general settings</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="gap-1 rounded-full border border-border px-3 text-xs"
+                  onClick={() => window.dispatchEvent(new Event("calendar:trigger-export"))}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Export .ics
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Download filtered calendar as .ics</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
 
         <DropdownMenu>
