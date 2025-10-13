@@ -31,6 +31,8 @@ export type TranscriptionRecord = {
   summary?: string;
   tags?: string[];
   flagged?: boolean;
+  fullText?: string; // NEW: Full transcript text
+  sessionId?: string; // NEW: Link to SQLite session
 };
 
 type DashboardDataContextValue = {

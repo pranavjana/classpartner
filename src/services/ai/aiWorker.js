@@ -15,6 +15,9 @@ const state = {
   normCache: [],                // number[] norms for cosine
   embedDisabledUntil: 0,        // backoff for embeddings
 
+  // session tracking
+  currentSessionId: null,       // Track current recording session
+
   // summarization cadence
   lastSummaryAt: 0,
   summaryWindowMs: workerData?.summaryWindowMs ?? 60_000,
@@ -52,17 +55,19 @@ function getRollingText() {
 
 /* -------------------- EMBEDDING -------------------- */
 async function indexSegment(seg) {
-  if (!state.provider?.embed) return;
-  if (now() < state.embedDisabledUntil) return;
+  if (!state.provider?.embed) return null;
+  if (now() < state.embedDisabledUntil) return null;
 
   try {
     const [vec] = await state.provider.embed([seg.text]);
     if (vec) {
       state.vectors.push(vec);
       state.normCache.push(norm(vec));
+      return vec; // Return embedding for disk storage
     } else {
       state.vectors.push(null);
       state.normCache.push(0);
+      return null;
     }
   } catch (e) {
     const msg = String(e?.message ?? e);
@@ -74,6 +79,7 @@ async function indexSegment(seg) {
     }
     state.vectors.push(null);
     state.normCache.push(0);
+    return null;
   }
 }
 
@@ -143,9 +149,10 @@ async function maybeSummarize() {
 }
 
 
-/* -------------------- FAST QUERY -------------------- */
+/* -------------------- FAST QUERY (with disk fallback) -------------------- */
 async function answerQueryFast(query, opts = {}) {
   const k = opts.k || 6;
+  const searchFullHistory = opts.searchFullHistory || false;
 
   // Try semantic retrieval if we have embed; else keyword fallback
   let qv = null, nq = 0;
@@ -157,32 +164,59 @@ async function answerQueryFast(query, opts = {}) {
   } catch { /* ignore, fallback below */ }
 
   let hits = [];
+
+  // 1. Search in-memory first (fast, recent segments)
   if (qv && nq) {
     for (let i = 0; i < state.vectors.length; i++) {
       const v = state.vectors[i]; const nv = state.normCache[i];
       if (!v || !nv) continue;
       const score = cosineSim(qv, v, nv);
-      hits.push([score, i]);
+      hits.push([score, i, 'memory']);
     }
     hits.sort((a, b) => b[0] - a[0]);
-    hits = hits.slice(0, k);
   } else {
+    // Keyword fallback
     const Q = query.toLowerCase();
     for (let i = 0; i < state.segments.length; i++) {
       const t = state.segments[i].text.toLowerCase();
       const score = t.includes(Q) ? (Q.length / (t.length + 1)) : 0;
-      if (score > 0) hits.push([score, i]);
+      if (score > 0) hits.push([score, i, 'memory']);
     }
     hits.sort((a, b) => b[0] - a[0]);
-    hits = hits.slice(0, k);
   }
 
-  const ctx = hits.map(([, i]) => state.segments[i])
-                  .filter(Boolean)
-                  .map(s => `• [${fmtTs(s.startMs)}-${fmtTs(s.endMs)}] ${s.text}`)
-                  .join('\n');
+  const memoryHits = hits.slice(0, k);
 
-  const cached = { rollingSummary: getRollingText().slice(-800) };
+  // 2. If searching full history OR memory results are insufficient, request disk search
+  let diskHits = [];
+  if (searchFullHistory && state.currentSessionId && qv) {
+    // Request disk search from main process
+    try {
+      const memoryIds = state.segments.map(s => s.id);
+      const diskResults = await requestDiskSearch(state.currentSessionId, qv, k, memoryIds);
+      diskHits = diskResults.map(r => [r.score, r.segment, 'disk']);
+    } catch (e) {
+      post('ai:log', { message: `Disk search failed: ${e.message}` });
+    }
+  }
+
+  // 3. Merge and rank results
+  const allHits = [...memoryHits, ...diskHits];
+  allHits.sort((a, b) => b[0] - a[0]);
+  const topHits = allHits.slice(0, k);
+
+  // 4. Format context
+  const ctx = topHits.map(([score, item, source]) => {
+    const seg = source === 'memory' ? state.segments[item] : item;
+    return `• [${fmtTs(seg.startMs)}-${fmtTs(seg.endMs)}] ${seg.text}`;
+  }).filter(Boolean).join('\n');
+
+  const cached = {
+    rollingSummary: getRollingText().slice(-800),
+    searchedFullHistory: searchFullHistory,
+    memoryHits: memoryHits.length,
+    diskHits: diskHits.length
+  };
 
   if (opts.mode === 'snippets') return { mode: 'snippets', snippets: ctx, cached };
 
@@ -198,6 +232,31 @@ Answer succinctly. If insufficient context, say so.`;
   } catch (e) {
     return { mode: 'snippets', snippets: ctx, cached, error: String(e?.message ?? e) };
   }
+}
+
+// Helper to request disk search from main process
+function requestDiskSearch(sessionId, queryEmbedding, limit, excludeIds) {
+  return new Promise((resolve, reject) => {
+    const requestId = 'disk_' + Math.random().toString(36).slice(2);
+    const timeout = setTimeout(() => reject(new Error('Disk search timeout')), 5000);
+
+    const handler = (msg) => {
+      if (msg?.type === 'disk-search:result' && msg?.payload?.requestId === requestId) {
+        clearTimeout(timeout);
+        parentPort.off('message', handler);
+        resolve(msg.payload.results || []);
+      }
+    };
+
+    parentPort.on('message', handler);
+    post('disk-search:request', {
+      requestId,
+      sessionId,
+      queryEmbedding: Array.from(queryEmbedding),
+      limit,
+      excludeIds
+    });
+  });
 }
 
 /* -------------------- MESSAGE HANDLER -------------------- */
@@ -284,6 +343,18 @@ parentPort.on('message', async (msg) => {
     if (msg?.type === 'debug:forceBackup') { state.llmDisabledUntil = Date.now() + 5*60*1000; post('ai:log',{message:'Primary LLM forced into cooldown'}); return; }
 
 
+    if (msg?.type === 'session:start') {
+      state.currentSessionId = msg.payload.sessionId;
+      post('ai:log', { message: `Session started: ${state.currentSessionId}` });
+      return;
+    }
+
+    if (msg?.type === 'session:end') {
+      post('ai:log', { message: `Session ended: ${state.currentSessionId}` });
+      state.currentSessionId = null;
+      return;
+    }
+
     if (msg?.type === 'segment') {
       const seg = msg.payload;
       if (seg?.text) {
@@ -292,7 +363,7 @@ parentPort.on('message', async (msg) => {
         if (typeof seg.endMs !== 'number' || seg.endMs < MIN_MS) seg.endMs = now();
         if (typeof seg.startMs !== 'number' || seg.startMs < MIN_MS) seg.startMs = seg.endMs - 2000;
 
-        // Store segment
+        // Store segment in memory
         state.segments.push(seg);
         if (state.segments.length > 2000) {
           const drop = state.segments.length - 2000;
@@ -302,7 +373,16 @@ parentPort.on('message', async (msg) => {
         }
 
         // Background: embed & maybe summarize
-        await indexSegment(seg);
+        const embedding = await indexSegment(seg);
+
+        // Send segment + embedding to main for disk storage
+        if (embedding && state.currentSessionId) {
+          post('segment:save', {
+            segment: { ...seg, sessionId: state.currentSessionId },
+            embedding: Array.from(embedding)
+          });
+        }
+
         await maybeSummarize();
       }
       return;

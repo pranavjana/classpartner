@@ -144,7 +144,7 @@ contextBridge.exposeInMainWorld("settings", {
 });
 
 /**
- * Simple event bus helpers you’re using already
+ * Simple event bus helpers you're using already
  */
 contextBridge.exposeInMainWorld("bus", {
   // UI -> UI: let renderers dispatch and listen to this DOM event locally
@@ -152,6 +152,17 @@ contextBridge.exposeInMainWorld("bus", {
     window.dispatchEvent(new CustomEvent("qa:jump", { detail: msRange })),
   // Renderer -> main: send final segment into AI pipeline
   sendFinal: (seg) => ipcRenderer.send("transcript:final", seg),
+});
+
+/**
+ * Transcript storage API (NEW)
+ */
+contextBridge.exposeInMainWorld("transcriptStorage", {
+  getCurrentSession: () => ipcRenderer.invoke("transcript:get-current-session"),
+  getFullTranscript: (sessionId) => ipcRenderer.invoke("transcript:get-full", sessionId),
+  exportTranscript: (sessionId, format) => ipcRenderer.invoke("transcript:export", { sessionId, format }),
+  getSessions: (limit) => ipcRenderer.invoke("transcript:get-sessions", limit),
+  getStats: () => ipcRenderer.invoke("transcript:get-stats"),
 });
 
 /**
