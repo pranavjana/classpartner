@@ -22,20 +22,21 @@ import {
 } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useThemeSwitcher } from "@/lib/ui/useThemeSwitcher";
-import { useTranscriptionLauncher } from "@/lib/transcription/use-launcher";
+import { useTranscriptionLauncher, type LaunchOutcome } from "@/lib/transcription/use-launcher";
 import { openGeneralSettingsDialog } from "@/components/sidebar/GeneralSettingsDialogue";
 
 export default function DashboardHeader({
   onNewTranscription,
 }: {
-  onNewTranscription?: () => void | Promise<void>;
+  onNewTranscription?: (context: LaunchOutcome) => void | Promise<void>;
 }) {
   const { setTheme } = useThemeSwitcher();
-  const { launch, launching } = useTranscriptionLauncher({ onLaunch: onNewTranscription });
+  const { launch, launching, dialog } = useTranscriptionLauncher({ onLaunch: onNewTranscription });
   const router = useRouter();
 
   return (
     <header className="sticky top-0 z-30 bg-background/70 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-b border-border">
+      {dialog}
       <div className="mx-auto max-w-7xl px-4 py-3 flex items-center gap-3">
         <SidebarTrigger className="-ml-1.5" />
 

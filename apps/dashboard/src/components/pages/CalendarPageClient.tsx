@@ -527,12 +527,15 @@ function CreateEventDialog({ day, onSubmit }: { day: Date; onSubmit: (payload: O
 
         <div className="grid gap-2">
           <Label htmlFor="class">Link to class (optional)</Label>
-          <Select value={form.classId ?? ""} onValueChange={(value) => setField("classId")(value || undefined)}>
+          <Select
+            value={form.classId ?? "__none"}
+            onValueChange={(value) => setField("classId")(value === "__none" ? undefined : value)}
+          >
             <SelectTrigger id="class">
               <SelectValue placeholder="Pick a class" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">No linked class</SelectItem>
+              <SelectItem value="__none">No linked class</SelectItem>
               {classes.map((cls) => (
                 <SelectItem key={cls.id} value={cls.id}>
                   {cls.code} — {cls.name}

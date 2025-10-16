@@ -2,8 +2,10 @@
 
 import * as React from "react";
 import { BookOpen, ChevronRight, MoreHorizontal, Pin, PinOff, Plus } from "lucide-react";
+import Link from "next/link";
 import { useClasses } from "@/lib/classes/provider";
 import { useDashboardData } from "@/lib/dashboard/provider";
+import { getClassDashboardDetail } from "@/lib/seed/data";
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -151,19 +153,23 @@ export function NavClasses() {
               </SidebarMenuButton>
             </SidebarMenuItem>
           ) : (
-            pinned.map((cls) => (
-              <SidebarMenuItem key={`p-${cls.id}`}>
-                <SidebarMenuButton asChild tooltip={`${cls.code} — ${cls.name}`}>
-                  <a href={`/classes/${cls.slug}`} className="flex items-center gap-2">
-                    <Pin className="h-4 w-4" />
-                    <span className="flex-1 truncate">
-                      {cls.code} — {cls.name}
-                    </span>
-                    <span className="text-xs text-muted-foreground">{transcriptionCounts[cls.id] ?? 0}</span>
-                  </a>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))
+            pinned.map((cls) => {
+              const hasDashboard = Boolean(getClassDashboardDetail(cls.slug));
+              const href = hasDashboard ? `/classes/${cls.slug}` : `/classes/workspace?classId=${cls.id}`;
+              return (
+                <SidebarMenuItem key={`p-${cls.id}`}>
+                  <SidebarMenuButton asChild tooltip={`${cls.code} — ${cls.name}`}>
+                    <Link href={href} className="flex items-center gap-2">
+                      <Pin className="h-4 w-4" />
+                      <span className="flex-1 truncate">
+                        {cls.code} — {cls.name}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{transcriptionCounts[cls.id] ?? 0}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })
           )}
         </SidebarMenu>
       </SidebarGroup>
@@ -248,14 +254,17 @@ export function NavClasses() {
                           <SidebarMenuSubItem key={`subp-${cls.id}`}>
                             <div className="flex items-center gap-1">
                               <SidebarMenuSubButton asChild className="flex-1">
-                                <a href={`/classes/${cls.slug}`} className="flex items-center gap-2">
+                                <Link
+                                  href={getClassDashboardDetail(cls.slug) ? `/classes/${cls.slug}` : `/classes/workspace?classId=${cls.id}`}
+                                  className="flex items-center gap-2"
+                                >
                                   <span className="truncate">
                                     {cls.code} — {cls.name}
                                   </span>
                                   <span className="text-xs text-muted-foreground">
                                     {transcriptionCounts[cls.id] ?? 0}
                                   </span>
-                                </a>
+                                </Link>
                               </SidebarMenuSubButton>
 
                               {/* 3-dot menu */}
@@ -304,14 +313,17 @@ export function NavClasses() {
                       <SidebarMenuSubItem key={cls.id}>
                         <div className="flex items-center gap-1">
                           <SidebarMenuSubButton asChild className="flex-1">
-                            <a href={`/classes/${cls.slug}`} className="flex items-center gap-2">
+                            <Link
+                              href={getClassDashboardDetail(cls.slug) ? `/classes/${cls.slug}` : `/classes/workspace?classId=${cls.id}`}
+                              className="flex items-center gap-2"
+                            >
                               <span className="truncate">
                                 {cls.code} — {cls.name}
                               </span>
                               <span className="text-xs text-muted-foreground">
                                 {transcriptionCounts[cls.id] ?? 0}
                               </span>
-                            </a>
+                            </Link>
                           </SidebarMenuSubButton>
 
                           {/* 3-dot menu */}

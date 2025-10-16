@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useClasses } from "@/lib/classes/provider";
 import { useDashboardData } from "@/lib/dashboard/provider";
+import { getClassDashboardDetail } from "@/lib/seed/data";
 import { Badge } from "@/components/ui/badge";
 import { ChevronRight } from "lucide-react";
 
@@ -32,24 +33,37 @@ export default function ClassesOverviewCard({ className = "" }: { className?: st
         <div className="text-sm text-muted-foreground">No classes yet — add one from the sidebar.</div>
       ) : (
         <div className="space-y-3">
-          {classes.map((c) => (
-            <Link
-              key={c.id}
-              href={`/classes/${c.slug}`}
-              className="flex items-center gap-4 rounded-lg p-2 transition hover:bg-muted"
-            >
-              <span className="h-3 w-3 rounded-full bg-primary" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">
-                  {c.code} — {c.name}
-                </p>
-              </div>
-              <Badge variant="secondary" className="text-xs font-normal">
-                {(counts[c.id] ?? c.transcriptions ?? 0)} transcriptions
-              </Badge>
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            </Link>
-          ))}
+            {classes.map((c) => {
+              const hasDashboard = Boolean(getClassDashboardDetail(c.slug));
+              const content = (
+                <>
+                  <span className="h-3 w-3 rounded-full bg-primary" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {c.code} — {c.name}
+                  </p>
+                </div>
+                <Badge variant="secondary" className="text-xs font-normal">
+                  {(counts[c.id] ?? c.transcriptions ?? 0)} transcriptions
+                </Badge>
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              </>
+            );
+
+              const href = hasDashboard
+                ? `/classes/${c.slug}`
+                : `/classes/workspace?classId=${c.id}`;
+
+              return (
+                <Link
+                  key={c.id}
+                  href={href}
+                  className="flex items-center gap-4 rounded-lg p-2 transition hover:bg-muted"
+                >
+                  {content}
+                </Link>
+              );
+          })}
         </div>
       )}
     </div>

@@ -1,9 +1,11 @@
 import type { NextConfig } from "next";
 
+const isProductionBuild = process.env.NODE_ENV === "production";
+
 const nextConfig: NextConfig = {
   output: "export",
   trailingSlash: true,
-  assetPrefix: "./",
+  ...(isProductionBuild ? { assetPrefix: "./" } : {}),
   images: { unoptimized: true },
 
   // 👇 silences the “inferred workspace root” warning

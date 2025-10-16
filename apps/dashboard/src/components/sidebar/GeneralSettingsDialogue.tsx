@@ -64,11 +64,11 @@ function loadSettings(): GeneralSettings {
   } catch {
     return DEFAULT_SETTINGS;
   }
-}
+};
 
 function saveSettings(s: GeneralSettings) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-}
+};
 
 /**
  * GeneralSettingsDialog
