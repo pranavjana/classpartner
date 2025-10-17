@@ -7,7 +7,8 @@ let dragOffset = { x: 0, y: 0 };
 let isRecording = false;
 let audioService = null;
 let transcriptLines = [];
-let maxTranscriptLines = 50;
+let currentSessionId = null; // NEW: Track current session
+let totalSegmentCount = 0;   // NEW: Total segments in database
 
 // Wait for DOM to be loaded
 document.addEventListener('DOMContentLoaded', () => {
@@ -48,6 +49,14 @@ function initializeWindowControls() {
   settingsBtn.addEventListener('click', () => {
     showNotification('Settings will be available in a future update');
   });
+
+  // NEW: Download button
+  const downloadBtn = document.getElementById('download-btn');
+  if (downloadBtn) {
+    downloadBtn.addEventListener('click', async () => {
+      await downloadTranscript();
+    });
+  }
 }
 
 function initializeContextMenu() {
@@ -328,6 +337,10 @@ async function startRecording() {
       return;
     }
 
+    // NEW: Store session ID
+    currentSessionId = result.sessionId;
+    console.log('[RENDERER] Session started:', currentSessionId);
+
     // Start audio recording
     const audioStarted = await audioService.startRecording();
     if (!audioStarted) {
@@ -337,7 +350,9 @@ async function startRecording() {
     }
 
     isRecording = true;
+    totalSegmentCount = 0;
     updateRecordingUI(true);
+    updateSegmentCounter(0);
     hideError();
     hidePlaceholderText();
 
@@ -359,8 +374,20 @@ async function stopRecording() {
     }
 
     // Stop Deepgram transcription
-    await window.electronAPI.stopTranscription();
+    const result = await window.electronAPI.stopTranscription();
     updateConnectionStatus('disconnected');
+
+    // NEW: Log session end
+    if (result.success && result.sessionId) {
+      console.log('[RENDERER] Session ended:', result.sessionId, result.stats);
+      showNotification(`Session saved: ${result.stats?.segmentCount || 0} segments`);
+    }
+
+    // Show download button
+    const downloadBtn = document.getElementById('download-btn');
+    if (downloadBtn && currentSessionId) {
+      downloadBtn.classList.remove('hidden');
+    }
 
   } catch (error) {
     console.error('Failed to stop recording:', error);
@@ -391,17 +418,17 @@ function handleTranscriptionData(data) {
 
 function addTranscriptLine(text, confidence) {
   const finalTextEl = document.getElementById('final-text');
-  
+
   // Remove placeholder if it exists
   const placeholder = document.getElementById('placeholder-text');
   if (placeholder) {
     placeholder.remove();
   }
-  
+
   // Create span for this text segment instead of div (inline element)
   const span = document.createElement('span');
   span.className = 'transcript-segment';
-  
+
   // Add confidence class
   if (confidence >= 0.8) {
     span.classList.add('high-confidence');
@@ -410,13 +437,13 @@ function addTranscriptLine(text, confidence) {
   } else {
     span.classList.add('low-confidence');
   }
-  
+
   // Mark as recent
   span.classList.add('recent');
   setTimeout(() => span.classList.remove('recent'), 3000);
-  
+
   span.textContent = text + ' '; // Add space after each segment
-  
+
   // Add to transcript
   transcriptLines.push({
     text: text,
@@ -425,14 +452,11 @@ function addTranscriptLine(text, confidence) {
     element: span
   });
 
-  // Remove old segments if we exceed the limit
-  if (transcriptLines.length > maxTranscriptLines) {
-    const oldSegment = transcriptLines.shift();
-    if (oldSegment.element && oldSegment.element.parentNode) {
-      oldSegment.element.remove();
-    }
-  }
+  // NEW: Increment total segment count
+  totalSegmentCount++;
+  updateSegmentCounter(totalSegmentCount);
 
+  // Keep all segments - no removal for full history
   finalTextEl.appendChild(span);
 }
 
@@ -966,6 +990,129 @@ function setupQnABox() {
     }
   });
   btn.addEventListener('click', () => ask(undefined));
+}
+
+// NEW: Segment counter update
+function updateSegmentCounter(count) {
+  const counterEl = document.getElementById('segment-counter');
+  const textEl = document.getElementById('segment-count-text');
+
+  if (counterEl && textEl) {
+    const total = count;
+
+    if (total > 0) {
+      counterEl.classList.remove('hidden');
+      textEl.textContent = `${total} segment${total !== 1 ? 's' : ''}`;
+    } else {
+      counterEl.classList.add('hidden');
+    }
+  }
+}
+
+// NEW: Download transcript function
+async function downloadTranscript() {
+  if (!currentSessionId) {
+    showNotification('No session to download');
+    return;
+  }
+
+  try {
+    // Create a simple download menu
+    const format = await promptFormatSelection();
+    if (!format) return;
+
+    const result = await window.transcriptStorage.exportTranscript(currentSessionId, format);
+
+    if (!result.success) {
+      showError(`Failed to export: ${result.error}`);
+      return;
+    }
+
+    // Create a blob and download it
+    let blob;
+    if (result.isBinary) {
+      // Handle binary data (DOCX) - convert array back to Uint8Array
+      const uint8Array = new Uint8Array(result.content);
+      blob = new Blob([uint8Array], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      });
+    } else {
+      // Handle text data (TXT, MD, JSON)
+      const mimeType = format === 'json' ? 'application/json' : 'text/plain';
+      blob = new Blob([result.content], { type: mimeType });
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = result.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    showNotification(`Downloaded: ${result.filename}`);
+  } catch (error) {
+    console.error('Download failed:', error);
+    showError(`Download failed: ${error.message}`);
+  }
+}
+
+// Helper to prompt for format selection
+function promptFormatSelection() {
+  return new Promise((resolve) => {
+    // Create a simple modal
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(20, 20, 20, 0.95);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 20px;
+      z-index: 10000;
+      min-width: 250px;
+    `;
+
+    modal.innerHTML = `
+      <h3 style="margin: 0 0 15px 0; color: rgba(255, 255, 255, 0.9); font-size: 14px;">Download Format</h3>
+      <button class="format-btn" data-format="docx" style="display: block; width: 100%; margin: 8px 0; padding: 10px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">
+        Word Document (.docx)
+      </button>
+      <button class="format-btn" data-format="txt" style="display: block; width: 100%; margin: 8px 0; padding: 10px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">
+        Plain Text (.txt)
+      </button>
+      <button class="format-btn" data-format="md" style="display: block; width: 100%; margin: 8px 0; padding: 10px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">
+        Markdown (.md)
+      </button>
+      <button class="format-btn" data-format="json" style="display: block; width: 100%; margin: 8px 0; padding: 10px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">
+        JSON (.json)
+      </button>
+      <button class="format-btn" data-format="cancel" style="display: block; width: 100%; margin: 15px 0 0 0; padding: 10px; background: rgba(255, 0, 0, 0.2); border: 1px solid rgba(255, 0, 0, 0.3); color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">
+        Cancel
+      </button>
+    `;
+
+    document.body.appendChild(modal);
+
+    modal.querySelectorAll('.format-btn').forEach(btn => {
+      btn.addEventListener('mouseenter', () => {
+        btn.style.background = 'rgba(255, 255, 255, 0.2)';
+      });
+      btn.addEventListener('mouseleave', () => {
+        const format = btn.dataset.format;
+        btn.style.background = format === 'cancel'
+          ? 'rgba(255, 0, 0, 0.2)'
+          : 'rgba(255, 255, 255, 0.1)';
+      });
+      btn.addEventListener('click', () => {
+        const format = btn.dataset.format;
+        document.body.removeChild(modal);
+        resolve(format === 'cancel' ? null : format);
+      });
+    });
+  });
 }
 
 document.addEventListener('DOMContentLoaded', () => {

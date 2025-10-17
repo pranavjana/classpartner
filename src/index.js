@@ -6,6 +6,7 @@ require('dotenv').config();
 
 const DeepgramService = require('../src/services/deepGram.js');        // ⬅ adjust if your services/ live elsewhere
 const { AIPipeline } = require('../src/services/ai/pipeline');          // ⬅ adjust if needed
+const TranscriptStorage = require('../src/services/transcriptStorage'); // NEW: SQLite storage
 
 const store = new Store();
 const isDev = !app.isPackaged;
@@ -17,6 +18,8 @@ let dashboardWindow = null;  // full window for Next dashboard
 
 let deepgramService = null;
 let aiPipeline = null;
+let transcriptStorage = null; // NEW: Storage service
+let currentSessionId = null;  // NEW: Track current recording session
 
 // ---------- helpers
 function sendToAll(channel, payload) {
@@ -107,7 +110,14 @@ function createOverlayWindow() {
   return overlayWindow;
 }
 
-// ---------- AI + Deepgram
+// ---------- AI + Deepgram + Storage
+function ensureTranscriptStorage() {
+  if (!transcriptStorage) {
+    transcriptStorage = new TranscriptStorage();
+  }
+  return transcriptStorage;
+}
+
 function ensureAiPipeline() {
   if (aiPipeline) return;
   aiPipeline = new AIPipeline({
@@ -132,6 +142,40 @@ function ensureAiPipeline() {
   aiPipeline.on('update', (payload) => sendToAll('ai:update', payload));
   aiPipeline.on('log',    (payload) => { console.log('[AI PIPELINE][log]', payload); sendToAll('ai:log', payload); });
   aiPipeline.on('error',  (e) => sendToAll('ai:error', { message: String(e?.message ?? e) }));
+
+  // NEW: Listen for segments to save to disk
+  aiPipeline.worker.on('message', (msg) => {
+    if (msg?.type === 'segment:save') {
+      const { segment, embedding } = msg.payload;
+      if (transcriptStorage && segment) {
+        try {
+          const embeddingArray = embedding ? new Float32Array(embedding) : null;
+          transcriptStorage.saveSegment(segment, embeddingArray);
+        } catch (e) {
+          console.error('[STORAGE] Failed to save segment:', e);
+        }
+      }
+    }
+
+    // Handle disk search requests from worker
+    if (msg?.type === 'disk-search:request') {
+      const { requestId, sessionId, queryEmbedding, limit, excludeIds } = msg.payload;
+      try {
+        const qVec = new Float32Array(queryEmbedding);
+        const results = transcriptStorage.searchSimilar(sessionId, qVec, limit, excludeIds);
+        aiPipeline.worker.postMessage({
+          type: 'disk-search:result',
+          payload: { requestId, results }
+        });
+      } catch (e) {
+        console.error('[STORAGE] Disk search failed:', e);
+        aiPipeline.worker.postMessage({
+          type: 'disk-search:result',
+          payload: { requestId, results: [] }
+        });
+      }
+    }
+  });
 }
 
 function setupDeepgramEventHandlers() {
@@ -231,9 +275,20 @@ function setupIpcHandlers() {
       if (!apiKey) return { success: false, error: 'Deepgram API key not found. Add DEEPGRAM_API_KEY to .env' };
 
       if (!deepgramService) { deepgramService = new DeepgramService(apiKey); setupDeepgramEventHandlers(); }
+      ensureTranscriptStorage(); // NEW: Initialize storage
       ensureAiPipeline();
+
+      // NEW: Create session
+      currentSessionId = 'session_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
+      transcriptStorage.createSession(currentSessionId);
+
+      // NEW: Notify AI worker of session start
+      aiPipeline.worker.postMessage({ type: 'session:start', payload: { sessionId: currentSessionId } });
+
       await deepgramService.connect();
-      return { success: true, message: 'Transcription started' };
+      console.log('[MAIN] Transcription started with session:', currentSessionId);
+
+      return { success: true, message: 'Transcription started', sessionId: currentSessionId };
     } catch (error) {
       return { success: false, error: `Failed to start transcription: ${error.message}` };
     }
@@ -243,6 +298,22 @@ function setupIpcHandlers() {
     try {
       deepgramService?.disconnect();
       aiPipeline?.flush();
+
+      // NEW: End session
+      if (currentSessionId && transcriptStorage) {
+        const sessionStats = transcriptStorage.endSession(currentSessionId);
+        console.log('[MAIN] Session ended:', currentSessionId, sessionStats);
+
+        // Notify AI worker
+        if (aiPipeline) {
+          aiPipeline.worker.postMessage({ type: 'session:end' });
+        }
+
+        const returnSessionId = currentSessionId;
+        currentSessionId = null;
+        return { success: true, message: 'Transcription stopped', sessionId: returnSessionId, stats: sessionStats };
+      }
+
       return { success: true, message: 'Transcription stopped' };
     } catch (error) {
       return { success: false, error: `Failed to stop transcription: ${error.message}` };
@@ -298,6 +369,83 @@ function setupIpcHandlers() {
     if (gotUpdate) return { success: true, message: 'ai:update received' };
     return { success: false, error: 'No ai:update within 5s' };
   });
+
+  // NEW: Transcript storage handlers
+  ipcMain.handle('transcript:get-full', async (_evt, sessionId) => {
+    try {
+      if (!transcriptStorage) return { success: false, error: 'Storage not initialized' };
+      const transcript = transcriptStorage.getFullTranscript(sessionId, true);
+      const session = transcriptStorage.getSession(sessionId);
+      return { success: true, transcript, session };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('transcript:export', async (_evt, { sessionId, format }) => {
+    try {
+      if (!transcriptStorage) return { success: false, error: 'Storage not initialized' };
+
+      let content;
+      let filename = `transcript_${sessionId}`;
+      let isBinary = false;
+
+      switch (format) {
+        case 'txt':
+          content = transcriptStorage.exportAsText(sessionId);
+          filename += '.txt';
+          break;
+        case 'md':
+        case 'markdown':
+          content = transcriptStorage.exportAsMarkdown(sessionId);
+          filename += '.md';
+          break;
+        case 'json':
+          content = transcriptStorage.exportAsJSON(sessionId);
+          filename += '.json';
+          break;
+        case 'docx':
+          content = await transcriptStorage.exportAsDOCX(sessionId);
+          filename += '.docx';
+          isBinary = true;
+          // Convert buffer to array for IPC transfer
+          content = Array.from(content);
+          break;
+        default:
+          return { success: false, error: 'Invalid format. Use txt, md, json, or docx' };
+      }
+
+      return { success: true, content, filename, isBinary };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('transcript:get-current-session', () => {
+    return { sessionId: currentSessionId };
+  });
+
+  ipcMain.handle('transcript:get-sessions', async (_evt, limit = 50) => {
+    try {
+      if (!transcriptStorage) {
+        ensureTranscriptStorage();
+      }
+      const sessions = transcriptStorage.getAllSessions(limit);
+      return { success: true, sessions };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('transcript:get-stats', () => {
+    try {
+      if (!transcriptStorage) return { success: false, error: 'Storage not initialized' };
+      const stats = transcriptStorage.getStats();
+      return { success: true, stats };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
 }
 
 // ---------- app lifecycle
@@ -321,4 +469,5 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   deepgramService?.destroy(); deepgramService = null;
   aiPipeline?.dispose(); aiPipeline = null;
+  transcriptStorage?.close(); transcriptStorage = null; // NEW: Close database
 });
