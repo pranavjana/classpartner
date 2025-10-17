@@ -411,6 +411,47 @@ const SESSION_SUMMARIES: Record<string, string> = {
   "tx-302": "Summarised peer review rubric and feedback themes.",
 };
 
+const SESSION_KEY_POINTS: Record<string, string[]> = {
+  "tx-101": [
+    "Derived the relationship between phase margin and loop stability.",
+    "Walked through Nyquist plots for common amplifier configurations.",
+    "Discussed practical compensation strategies ahead of Quiz 2.",
+  ],
+  "tx-105": [
+    "Stepped through manual Bode plot construction with real values.",
+    "Highlighted frequent mistakes in interpreting phase crossover.",
+  ],
+  "tx-201": [
+    "Outlined the usability testing process adopted for Project Polaris.",
+    "Shared interview scripts and screener templates for recruiting participants.",
+    "Reviewed metrics to capture qualitative and quantitative insights.",
+  ],
+  "tx-203": [
+    "Captured peer critique themes around navigation complexity.",
+    "Identified accessibility adjustments for the next sprint.",
+  ],
+  "tx-302": [
+    "Summarised feedback categories and how they map to rubric criteria.",
+    "Recommended next iteration focus for group presentations.",
+  ],
+};
+
+const SESSION_ACTION_ITEMS: Record<string, string[]> = {
+  "tx-101": ["Complete Quiz 2 by Friday 5pm.", "Review lab note on Miller compensation circuits."],
+  "tx-105": ["Submit revised Bode plot homework before the next tutorial."],
+  "tx-201": ["Schedule two pilot usability tests by next Monday.", "Upload interviewer notes to the shared drive."],
+  "tx-203": ["Prototype accessibility fixes for dark mode contrast issues."],
+  "tx-302": ["Update presentation deck to address rubric feedback on audience engagement."],
+};
+
+const SESSION_CONTENT: Record<string, string> = {
+  "tx-101": `Professor Tan opened with a recap of feedback concepts before diving into gain and phase margins. We derived the condition for closed-loop stability using Nyquist plots and compared it with Bode plot intuition. The class walked through a worked example of a two-stage op-amp, highlighting where the phase crosses -180° and how much margin remains. We ended by discussing compensation strategies and the expectations for Quiz 2.`,
+  "tx-105": `Tutorial focused on manual Bode plot construction. We converted transfer functions into magnitude/phase components, plotted asymptotes, and corrected for slope changes. Students practised identifying crossover frequency and marking phase margin. The tutor flagged recurring mistakes, especially in translating radians to degrees.`,
+  "tx-201": `Lecture covered the end-to-end usability testing toolkit for the studio project. Dr. Lim demonstrated how to write a recruiting screener, prepare consent forms, and structure interview guides. We watched clips from past sessions to identify observable behaviours and metrics worth capturing. Teams shared progress on their protocols and received quick feedback.`,
+  "tx-203": `During the studio critique, each team presented their latest iteration of the Polaris interface. Peers provided feedback on navigation complexity, icon readability, and the experience of setting reminders. Several accessibility issues were surfaced, especially around colour contrast in dark mode. Action items were recorded for each team before the next sprint.`,
+  "tx-302": `Workshop summarised feedback from the peer review round. We mapped comments back to rubric criteria and highlighted trends around storytelling, slide pacing, and visual clarity. The facilitator recommended concrete adjustments teams could make before their final presentations.`,
+};
+
 const CLASS_TAG_PRESETS: Record<string, string[]> = {
   ee2010: ["circuits", "analog", "engineering"],
   cs3240: ["design", "ux", "studio"],
@@ -445,6 +486,9 @@ export function createSeedTranscriptions(): TranscriptionRecord[] {
         summary: SESSION_SUMMARIES[session.id],
         tags: allTags.length ? allTags : undefined,
         flagged: session.status === "failed",
+        keyPoints: SESSION_KEY_POINTS[session.id],
+        actionItems: SESSION_ACTION_ITEMS[session.id],
+        content: SESSION_CONTENT[session.id],
       } satisfies TranscriptionRecord;
     });
   });

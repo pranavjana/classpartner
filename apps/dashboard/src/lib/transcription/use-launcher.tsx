@@ -44,7 +44,7 @@ type LaunchOptions = {
 export function useTranscriptionLauncher(options: LaunchOptions = {}) {
   const { onLaunch, onFallback, defaultClassId, defaultTitle } = options;
   const { classes } = useClasses();
-  const { addTranscription, updateTranscription } = useDashboardData();
+  const { addTranscription, updateTranscription, activeRecordId, setActiveRecordId } = useDashboardData();
 
   const [launching, setLaunching] = React.useState(false);
   const [dialogOpen, setDialogOpen] = React.useState(false);
@@ -54,9 +54,8 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
     if (typeof window === "undefined") return undefined;
     return window.localStorage.getItem(LAST_CLASS_KEY) ?? undefined;
   });
-  const [activeRecordId, setActiveRecordId] = React.useState<string | null>(null);
 
-  const activeRecordRef = React.useRef<string | null>(null);
+  const activeRecordRef = React.useRef<string | null>(activeRecordId);
   React.useEffect(() => {
     activeRecordRef.current = activeRecordId;
   }, [activeRecordId]);
@@ -69,32 +68,6 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
       window.localStorage.removeItem(LAST_CLASS_KEY);
     }
   }, [lastClassId]);
-
-  React.useEffect(() => {
-    const bridge =
-      typeof window !== "undefined"
-        ? (window as unknown as {
-            transcription?: {
-              onDisconnected?: (cb: () => void) => (() => void) | void;
-            };
-          }).transcription
-        : undefined;
-
-    if (!bridge?.onDisconnected) return;
-    const cleanup = bridge.onDisconnected(() => {
-      const id = activeRecordRef.current;
-      if (!id) return;
-      updateTranscription(id, {
-        status: "completed",
-        summary: "Recording ended. Review and publish from Recents.",
-      });
-      setActiveRecordId(null);
-      activeRecordRef.current = null;
-    });
-    return () => {
-      cleanup?.();
-    };
-  }, [updateTranscription]);
 
   const buildContext = React.useCallback(
     (classId: string | undefined, title?: string): LaunchContext => {
@@ -180,7 +153,7 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
         setLaunching(false);
       }
     },
-    [addTranscription, buildContext, onFallback, onLaunch, updateTranscription]
+    [addTranscription, buildContext, onFallback, onLaunch, setActiveRecordId, updateTranscription]
   );
 
   const handleDialogConfirm = React.useCallback(async () => {
@@ -198,15 +171,12 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
 
   const launch = React.useCallback(() => {
     if (launching) return;
-    if (defaultClassId) {
-      void startWithContext(defaultClassId, defaultTitle);
-      return;
-    }
-    const initial = lastClassId ?? classes[0]?.id ?? UNASSIGNED_VALUE;
-    setSelectedClassId(initial);
-    setSessionTitle("");
+    const initialClassId = defaultClassId ?? lastClassId ?? classes[0]?.id ?? UNASSIGNED_VALUE;
+    setSelectedClassId(initialClassId);
+    const initialTitle = defaultClassId ? defaultTitle?.trim() ?? "" : "";
+    setSessionTitle(initialTitle);
     setDialogOpen(true);
-  }, [classes, defaultClassId, defaultTitle, lastClassId, launching, startWithContext]);
+  }, [classes, defaultClassId, defaultTitle, lastClassId, launching]);
 
   const dialog = (
     <Dialog

@@ -4,6 +4,7 @@ import "./globals.css";
 import { ClassesProvider } from "@/lib/classes/provider";
 import { DashboardDataProvider } from "@/lib/dashboard/provider";
 import GeneralSettingsDialog from "@/components/sidebar/GeneralSettingsDialogue"; // <-- mount once globally
+import { TranscriptionStreamProvider } from "@/lib/transcription/stream-provider";
 import { SEED_CLASSES } from "@/lib/seed/data";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -20,9 +21,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <ClassesProvider seed={SEED_CLASSES}>
           <DashboardDataProvider>
-            {children}
-            {/* Render once so the sidebar can open it from anywhere */}
-            <GeneralSettingsDialog />
+            <TranscriptionStreamProvider>
+              {children}
+              {/* Render once so the sidebar can open it from anywhere */}
+              <GeneralSettingsDialog />
+            </TranscriptionStreamProvider>
           </DashboardDataProvider>
         </ClassesProvider>
       </body>

@@ -32,6 +32,7 @@ import type {
   ClassStats,
   Note,
   Session,
+  SessionStatus,
 } from "@/lib/types/class-dashboard";
 import { cn } from "@/lib/utils";
 import {
@@ -41,8 +42,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { format } from "date-fns";
+import { addWeeks, isWithinInterval, parseISO, startOfWeek, subWeeks, format } from "date-fns";
 import { useTranscriptionLauncher } from "@/lib/transcription/use-launcher";
+import {
+  useDashboardData,
+  type TranscriptionRecord,
+} from "@/lib/dashboard/provider";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 type ClassDashboardPageProps = {
   detail: ClassDashboardDetail;
@@ -54,10 +77,19 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const {
+    transcriptionsForClass,
+    updateTranscription,
+    addTranscription,
+    deleteTranscription,
+  } = useDashboardData();
   const queryTab = searchParams?.get("tab") ?? undefined;
   const [activeTab, setActiveTab] = React.useState<string>(queryTab ?? DEFAULT_TAB);
   const [uploadFeedback, setUploadFeedback] = React.useState<string | null>(null);
   const uploadInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [renameTarget, setRenameTarget] = React.useState<TranscriptionRecord | null>(null);
+  const [renameValue, setRenameValue] = React.useState("");
+  const [deleteTarget, setDeleteTarget] = React.useState<TranscriptionRecord | null>(null);
   const { launch, launching, dialog } = useTranscriptionLauncher({
     defaultClassId: detail.classInfo.id,
     defaultTitle: `${detail.classInfo.code ?? detail.classInfo.name ?? "Live capture"}`,
@@ -71,6 +103,14 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
     const nextTab = queryTab ?? DEFAULT_TAB;
     setActiveTab((prev) => (prev === nextTab ? prev : nextTab));
   }, [queryTab]);
+
+  React.useEffect(() => {
+    if (!renameTarget) {
+      setRenameValue("");
+    } else {
+      setRenameValue(renameTarget.title ?? "");
+    }
+  }, [renameTarget]);
 
   const handleTabChange = React.useCallback(
     (value: string) => {
@@ -96,10 +136,122 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
     }, 1400);
   };
 
+  const classTranscriptions = React.useMemo(
+    () => transcriptionsForClass(detail.classInfo.id),
+    [detail.classInfo.id, transcriptionsForClass]
+  );
+
+  const derivedSessions: Session[] = React.useMemo(() => {
+    if (!classTranscriptions.length) return [];
+    const mapStatus = (status: TranscriptionRecord["status"]): SessionStatus => {
+      switch (status) {
+        case "completed":
+          return "ready";
+        case "in-progress":
+          return "processing";
+        default:
+          return "ready";
+      }
+    };
+
+    return classTranscriptions.map((tx) => {
+      const segments = tx.segments ?? [];
+      const lastSegment = segments.length ? segments[segments.length - 1] : undefined;
+      const derivedDuration =
+        tx.durationMinutes ||
+        (lastSegment?.endMs ? Math.max(1, Math.round(lastSegment.endMs / 60000)) : 0);
+      return {
+        id: tx.id,
+        classId: tx.classId ?? detail.classInfo.id,
+        title: tx.title,
+        date: tx.createdAt,
+        durationMinutes: derivedDuration,
+        status: mapStatus(tx.status),
+        lastEditedAt: tx.createdAt,
+        wordCount: tx.wordCount ?? 0,
+      };
+    });
+  }, [classTranscriptions, detail.classInfo.id]);
+
+  const effectiveSessions = derivedSessions.length ? derivedSessions : detail.sessions;
   const pinnedNotes = detail.notes.filter((note) => note.pinned);
-  const recentSessions = [...detail.sessions]
+  const recentSessions = [...effectiveSessions]
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
     .slice(0, 5);
+
+  const stats = React.useMemo(() => {
+    if (!derivedSessions.length) return detail.stats;
+    const totalMinutes = derivedSessions.reduce((sum, session) => sum + (session.durationMinutes ?? 0), 0);
+    const sessionCount = derivedSessions.length;
+    const avgSessionMinutes = sessionCount ? Math.round(totalMinutes / sessionCount) : 0;
+    const lastSession = derivedSessions
+      .map((session) => session.date)
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+
+    const now = startOfWeek(new Date(), { weekStartsOn: 1 });
+    const weeks = Array.from({ length: 8 }, (_, index) => subWeeks(now, 7 - index));
+    const weeklyTimeSeries = weeks.map((weekStart) => {
+      const weekEnd = addWeeks(weekStart, 1);
+      const minutes = derivedSessions
+        .filter((session) =>
+          isWithinInterval(parseISO(session.date), { start: weekStart, end: weekEnd })
+        )
+        .reduce((sum, session) => sum + (session.durationMinutes ?? 0), 0);
+      return { date: weekStart.toISOString(), minutes };
+    });
+
+    return {
+      totalMinutes,
+      sessionCount,
+      avgSessionMinutes,
+      lastSessionAt: lastSession,
+      weeklyTimeSeries,
+    } satisfies ClassStats;
+  }, [derivedSessions, detail.stats]);
+
+  const handleRenameSession = React.useCallback(
+    (id: string, title: string) => {
+      updateTranscription(id, { title });
+    },
+    [updateTranscription]
+  );
+
+  const handleDuplicateSession = React.useCallback(
+    (id: string) => {
+      const original = classTranscriptions.find((tx) => tx.id === id);
+      if (!original) return;
+      const timestamp = Date.now();
+      const duplicateSegments = original.segments
+        ? original.segments.map((segment, index) => ({
+            ...segment,
+            id: `${segment.id ?? `segment-${index}`}-copy-${timestamp}-${index}`,
+          }))
+        : undefined;
+      addTranscription({
+        title: `${original.title} (Copy)`,
+        classId: original.classId ?? detail.classInfo.id,
+        createdAt: new Date().toISOString(),
+        durationMinutes: original.durationMinutes ?? 0,
+        wordCount: original.wordCount ?? 0,
+        status: "draft",
+        summary: original.summary,
+        tags: original.tags,
+        flagged: false,
+        content: original.content,
+        keyPoints: original.keyPoints,
+        actionItems: original.actionItems,
+        segments: duplicateSegments,
+      });
+    },
+    [addTranscription, classTranscriptions, detail.classInfo.id]
+  );
+
+  const handleDeleteSession = React.useCallback(
+    (id: string) => {
+      deleteTranscription(id);
+    },
+    [deleteTranscription]
+  );
 
   return (
     <div className="flex flex-1 flex-col gap-6">
@@ -194,7 +346,7 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
 
         <TabsContent value="overview">
           <ClassOverviewPanel
-            stats={detail.stats}
+            stats={stats}
             recentSessions={recentSessions}
             pinnedNotes={pinnedNotes}
             allNotesCount={detail.notes.length}
@@ -203,7 +355,16 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
         </TabsContent>
 
         <TabsContent value="sessions">
-          <SessionsPanel sessions={detail.sessions} />
+          <SessionsPanel
+            sessions={effectiveSessions}
+            transcriptions={classTranscriptions}
+            onRenameRequest={(record) => {
+              setRenameTarget(record);
+              setRenameValue(record.title ?? "");
+            }}
+            onDuplicate={handleDuplicateSession}
+            onDeleteRequest={(record) => setDeleteTarget(record)}
+          />
         </TabsContent>
 
         <TabsContent value="notes">
@@ -211,13 +372,87 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
         </TabsContent>
 
         <TabsContent value="analytics">
-          <AnalyticsPanel stats={detail.stats} sessions={detail.sessions} />
+          <AnalyticsPanel stats={stats} sessions={effectiveSessions} />
         </TabsContent>
 
         <TabsContent value="settings">
           <SettingsPanel detail={detail} />
         </TabsContent>
       </Tabs>
+      <Dialog
+        open={Boolean(renameTarget)}
+        onOpenChange={(open) => {
+          if (!open) setRenameTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename session</DialogTitle>
+            <DialogDescription>
+              Update the title shown in the class dashboard and transcription list.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="rename-session">Session title</Label>
+            <Input
+              id="rename-session"
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+            />
+          </div>
+          <DialogFooter className="pt-4">
+            <Button type="button" variant="outline" onClick={() => setRenameTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                if (!renameTarget) return;
+                const trimmed = renameValue.trim();
+                if (!trimmed || trimmed === renameTarget.title) return;
+                handleRenameSession(renameTarget.id, trimmed);
+                setRenameTarget(null);
+              }}
+              disabled={!renameTarget || !renameValue.trim() || renameValue.trim() === renameTarget?.title}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete transcription?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">
+                {deleteTarget?.title ?? "this session"}
+              </span>{" "}
+              and its transcript from the dashboard.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!deleteTarget) return;
+                handleDeleteSession(deleteTarget.id);
+                setDeleteTarget(null);
+              }}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -367,7 +602,7 @@ function ClassOverviewPanel({ stats, recentSessions, pinnedNotes, allNotesCount,
                     </p>
                   </div>
                   <Button asChild variant="secondary" size="sm">
-                    <Link href={`/transcriptions/${session.id}`}>Open</Link>
+                    <Link href={`/transcriptions/view?id=${session.id}`}>Open</Link>
                   </Button>
                 </div>
               ))
@@ -447,9 +682,13 @@ function ClassOverviewPanel({ stats, recentSessions, pinnedNotes, allNotesCount,
 
 type SessionsPanelProps = {
   sessions: Session[];
+  transcriptions: TranscriptionRecord[];
+  onRenameRequest: (record: TranscriptionRecord) => void;
+  onDuplicate: (id: string) => void;
+  onDeleteRequest: (record: TranscriptionRecord) => void;
 };
 
-function SessionsPanel({ sessions }: SessionsPanelProps) {
+function SessionsPanel({ sessions, transcriptions, onRenameRequest, onDuplicate, onDeleteRequest }: SessionsPanelProps) {
   const [search, setSearch] = React.useState("");
   const [status, setStatus] = React.useState<"all" | Session["status"]>("all");
   const [sort, setSort] = React.useState<"date-desc" | "date-asc" | "title" | "duration">("date-desc");
@@ -576,6 +815,8 @@ function SessionsPanel({ sessions }: SessionsPanelProps) {
             ) : (
               filtered.map((session) => {
                 const isChecked = selected.has(session.id);
+                const record = transcriptions.find((tx) => tx.id === session.id);
+                const hasRecord = Boolean(record);
                 return (
                   <tr key={session.id} className="border-t border-border/60">
                     <td className="px-4 py-3 align-middle">
@@ -586,9 +827,13 @@ function SessionsPanel({ sessions }: SessionsPanelProps) {
                       />
                     </td>
                     <td className="px-4 py-3 align-middle font-medium">
-                      <Link href={`/transcriptions/${session.id}`} className="hover:underline">
-                        {session.title}
-                      </Link>
+                      {hasRecord ? (
+                        <Link href={`/transcriptions/view?id=${session.id}`} className="hover:underline">
+                          {session.title}
+                        </Link>
+                      ) : (
+                        <span>{session.title}</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 align-middle text-muted-foreground">
                       {format(new Date(session.date), "dd MMM yyyy, h:mma")}
@@ -600,6 +845,11 @@ function SessionsPanel({ sessions }: SessionsPanelProps) {
                       <StatusBadge status={session.status} />
                     </td>
                     <td className="px-4 py-3 align-middle text-right">
+                      {hasRecord ? null : (
+                        <p className="pb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Seed session
+                        </p>
+                      )}
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon" aria-label="Session actions">
@@ -607,16 +857,35 @@ function SessionsPanel({ sessions }: SessionsPanelProps) {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem asChild>
-                            <Link href={`/transcriptions/${session.id}`}>Open</Link>
+                          <DropdownMenuItem asChild disabled={!hasRecord}>
+                            <Link href={`/transcriptions/view?id=${session.id}`}>Open</Link>
                           </DropdownMenuItem>
-                          <DropdownMenuItem onSelect={() => alert("Rename session (stub)")}>
+                          <DropdownMenuItem
+                            disabled={!hasRecord}
+                            onSelect={() => {
+                              if (!record) return;
+                              onRenameRequest(record);
+                            }}
+                          >
                             Rename
                           </DropdownMenuItem>
-                          <DropdownMenuItem onSelect={() => alert("Duplicate session (stub)")}>
+                          <DropdownMenuItem
+                            disabled={!hasRecord}
+                            onSelect={() => {
+                              if (!record) return;
+                              onDuplicate(record.id);
+                            }}
+                          >
                             Duplicate
                           </DropdownMenuItem>
-                          <DropdownMenuItem onSelect={() => alert("Delete session (stub)")} className="text-destructive">
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            disabled={!hasRecord}
+                            onSelect={() => {
+                              if (!record) return;
+                              onDeleteRequest(record);
+                            }}
+                          >
                             Delete
                           </DropdownMenuItem>
                         </DropdownMenuContent>

@@ -20,6 +20,13 @@ export type CalendarEvent = {
 
 export type TranscriptionRecordStatus = "completed" | "in-progress" | "draft";
 
+export type TranscriptSegment = {
+  id: string;
+  text: string;
+  startMs?: number | null;
+  endMs?: number | null;
+};
+
 export type TranscriptionRecord = {
   id: string;
   title: string;
@@ -31,18 +38,27 @@ export type TranscriptionRecord = {
   summary?: string;
   tags?: string[];
   flagged?: boolean;
+  content?: string;
+  keyPoints?: string[];
+  actionItems?: string[];
+  segments?: TranscriptSegment[];
 };
 
 type DashboardDataContextValue = {
   ready: boolean;
   events: CalendarEvent[];
   transcriptions: TranscriptionRecord[];
+  activeRecordId: string | null;
   addEvent: (event: Omit<CalendarEvent, "id"> & { id?: string }) => string;
   updateEvent: (id: string, patch: Partial<CalendarEvent>) => void;
   deleteEvent: (id: string) => void;
   addTranscription: (record: Omit<TranscriptionRecord, "id"> & { id?: string }) => string;
-  updateTranscription: (id: string, patch: Partial<TranscriptionRecord>) => void;
+  updateTranscription: (
+    id: string,
+    patch: Partial<TranscriptionRecord> | ((prev: TranscriptionRecord) => TranscriptionRecord)
+  ) => void;
   deleteTranscription: (id: string) => void;
+  setActiveRecordId: (id: string | null) => void;
   upcomingEvents: (limit?: number) => CalendarEvent[];
   eventsOn: (day: Date) => CalendarEvent[];
   eventsBetween: (start: Date, end: Date) => CalendarEvent[];
@@ -52,6 +68,7 @@ type DashboardDataContextValue = {
 
 const DASHBOARD_EVENTS_KEY = "cp_dashboard_events";
 const DASHBOARD_TRANSCRIPTS_KEY = "cp_dashboard_transcriptions";
+const DASHBOARD_ACTIVE_TRANSCRIPT_KEY = "cp_active_transcription";
 
 const DashboardDataContext = React.createContext<DashboardDataContextValue | null>(null);
 
@@ -69,14 +86,20 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
   const [transcriptions, setTranscriptions] = React.useState<TranscriptionRecord[]>(() =>
     createSeedTranscriptions()
   );
+  const [activeRecordId, setActiveRecordIdState] = React.useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(DASHBOARD_ACTIVE_TRANSCRIPT_KEY) ?? null;
+  });
 
   // Hydrate from localStorage
   React.useEffect(() => {
     try {
       const storedEvents = localStorage.getItem(DASHBOARD_EVENTS_KEY);
       const storedTranscriptions = localStorage.getItem(DASHBOARD_TRANSCRIPTS_KEY);
+      const storedActive = localStorage.getItem(DASHBOARD_ACTIVE_TRANSCRIPT_KEY);
       if (storedEvents) setEvents(JSON.parse(storedEvents));
       if (storedTranscriptions) setTranscriptions(JSON.parse(storedTranscriptions));
+      if (storedActive) setActiveRecordIdState(storedActive);
     } catch (error) {
       console.warn("Failed to hydrate dashboard data", error);
     } finally {
@@ -90,10 +113,15 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
     try {
       localStorage.setItem(DASHBOARD_EVENTS_KEY, JSON.stringify(events));
       localStorage.setItem(DASHBOARD_TRANSCRIPTS_KEY, JSON.stringify(transcriptions));
+      if (activeRecordId) {
+        localStorage.setItem(DASHBOARD_ACTIVE_TRANSCRIPT_KEY, activeRecordId);
+      } else {
+        localStorage.removeItem(DASHBOARD_ACTIVE_TRANSCRIPT_KEY);
+      }
     } catch (error) {
       console.warn("Failed to persist dashboard data", error);
     }
-  }, [events, transcriptions, ready]);
+  }, [events, transcriptions, ready, activeRecordId]);
 
   const addEvent = React.useCallback(
     (payload: Omit<CalendarEvent, "id"> & { id?: string }) => {
@@ -118,15 +146,31 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
       setTranscriptions((prev) => [{ ...payload, id }, ...prev]);
       return id;
     },
+  []
+  );
+
+  const updateTranscription = React.useCallback(
+    (
+      id: string,
+      patch: Partial<TranscriptionRecord> | ((prev: TranscriptionRecord) => TranscriptionRecord)
+    ) => {
+      setTranscriptions((prev) =>
+        prev.map((tx) => {
+          if (tx.id !== id) return tx;
+          return typeof patch === "function" ? patch(tx) : { ...tx, ...patch };
+        })
+      );
+    },
     []
   );
 
-  const updateTranscription = React.useCallback((id: string, patch: Partial<TranscriptionRecord>) => {
-    setTranscriptions((prev) => prev.map((tx) => (tx.id === id ? { ...tx, ...patch } : tx)));
-  }, []);
-
   const deleteTranscription = React.useCallback((id: string) => {
     setTranscriptions((prev) => prev.filter((tx) => tx.id !== id));
+    setActiveRecordIdState((prev) => (prev === id ? null : prev));
+  }, []);
+
+  const setActiveRecordId = React.useCallback((id: string | null) => {
+    setActiveRecordIdState(id);
   }, []);
 
   const upcomingEvents = React.useCallback(
@@ -187,12 +231,14 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
       ready,
       events,
       transcriptions,
+      activeRecordId,
       addEvent,
       updateEvent,
       deleteEvent,
       addTranscription,
       updateTranscription,
       deleteTranscription,
+      setActiveRecordId,
       upcomingEvents,
       eventsOn,
       eventsBetween,
@@ -207,8 +253,10 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
       events,
       eventsBetween,
       eventsOn,
+      activeRecordId,
       ready,
       recentTranscriptions,
+      setActiveRecordId,
       transcriptions,
       transcriptionsForClass,
       upcomingEvents,

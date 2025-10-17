@@ -42,7 +42,7 @@ export default function RecentTranscriptionsCard({ className = "" }: { className
                   </p>
                 </div>
                 <Button size="sm" asChild variant="outline">
-                  <Link href={`/transcriptions/${tx.id}`}>Open</Link>
+                  <Link href={`/transcriptions/view?id=${tx.id}`}>Open</Link>
                 </Button>
               </div>
             );

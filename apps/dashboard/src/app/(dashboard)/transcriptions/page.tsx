@@ -133,7 +133,7 @@ export default function TranscriptionsPage() {
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="space-y-1">
                           <h2 className="text-lg font-semibold">
-                            <Link href={`/transcriptions/${tx.id}`} className="hover:underline">
+                            <Link href={`/transcriptions/view?id=${tx.id}`} className="hover:underline">
                               {tx.title}
                             </Link>
                           </h2>
@@ -173,7 +173,7 @@ export default function TranscriptionsPage() {
                           Updated {formatDistanceToNow(txDate, { addSuffix: true })}
                         </span>
                         <Button asChild variant="link" size="sm" className="ml-auto px-0">
-                          <Link href={`/transcriptions/${tx.id}`}>Open transcript</Link>
+                          <Link href={`/transcriptions/view?id=${tx.id}`}>Open transcript</Link>
                         </Button>
                       </div>
                     </article>

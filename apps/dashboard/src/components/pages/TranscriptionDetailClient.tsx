@@ -153,12 +153,56 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
             <Separator />
 
             <section className="space-y-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Highlights</h2>
-              <ul className="space-y-2 text-sm text-muted-foreground">
-                <li>• Bookmark, annotate, and jump to timestamps using the overlay controls.</li>
-                <li>• Export this transcript or share snippets directly with teammates.</li>
-                <li>• Use the classroom AI assistant to quiz yourself on the captured content.</li>
-              </ul>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Key points</h2>
+              {record.keyPoints?.length ? (
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  {record.keyPoints.map((point, index) => (
+                    <li key={`${record.id}-kp-${index}`} className="rounded-md border border-border/60 bg-muted/20 p-2">
+                      {point}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Key takeaways will appear here once the AI assistant finishes processing this transcript.
+                </p>
+              )}
+            </section>
+
+            <Separator />
+
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Action items</h2>
+              {record.actionItems?.length ? (
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  {record.actionItems.map((item, index) => (
+                    <li key={`${record.id}-ai-${index}`} className="flex items-start gap-2">
+                      <span>•</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Tasks, deadlines, and follow-ups will be listed once they are generated or added manually.
+                </p>
+              )}
+            </section>
+
+            <Separator />
+
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Full transcript</h2>
+              {record.content ? (
+                <div className="max-h-[420px] overflow-y-auto rounded-lg border border-border bg-muted/20 p-4 text-sm leading-relaxed text-muted-foreground">
+                  <p className="whitespace-pre-wrap">{record.content}</p>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  The transcript will appear here once the capture is processed. If you just finished recording, keep
+                  this page open — content usually lands within a few moments.
+                </p>
+              )}
             </section>
           </CardContent>
         </Card>
@@ -201,6 +245,10 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
               <div className="flex items-center justify-between">
                 <span>Word count</span>
                 <span className="font-medium">{new Intl.NumberFormat("en-US").format(record.wordCount)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Segments</span>
+                <span className="font-medium">{record.segments?.length ?? 0}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Captured</span>
