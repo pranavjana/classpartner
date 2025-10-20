@@ -134,8 +134,18 @@ window.ai.onError(e => console.log('[ai error]', e));
 window.ai.onUpdate(p => console.log('[ai update]', p));
 
 // 2) Seed a couple of "final" lines without talking:
-window.bus.sendFinal({ id:'s1', text:'Gradient descent updates parameters to minimize loss.', startMs: Date.now()-4000, endMs: Date.now()-2000 });
-window.bus.sendFinal({ id:'s2', text:'L2 regularization reduces overfitting by penalizing large weights.', startMs: Date.now()-2000, endMs: Date.now() });
+window.bus.sendFinal({
+  id: 's1',
+  text: 'The lecturer outlined the project milestones and safety checks for next week.',
+  startMs: Date.now() - 4000,
+  endMs: Date.now() - 2000,
+});
+window.bus.sendFinal({
+  id: 's2',
+  text: 'They also reviewed the uploaded briefing and clarified expectations for the midterm summary.',
+  startMs: Date.now() - 2000,
+  endMs: Date.now(),
+});
 
 // 3) Ask a question (vector-retrieval + single LLM pass)
 await window.ai.ask("What did they say about overfitting?", { k: 6 });
@@ -286,4 +296,3 @@ For issues and questions:
 ---
 
 **Built for better classroom and meeting experiences**
-

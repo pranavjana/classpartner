@@ -40,7 +40,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWindowBounds: () => ipcRenderer.invoke('get-window-bounds'),
   
   // Transcription features
-  startTranscription: () => ipcRenderer.invoke('start-transcription'),
+  startTranscription: (metadata) => ipcRenderer.invoke('start-transcription', metadata),
   stopTranscription: () => ipcRenderer.invoke('stop-transcription'),
   sendAudioData: (audioData) => ipcRenderer.invoke('send-audio-data', audioData),
   getTranscriptionStatus: () => ipcRenderer.invoke('get-transcription-status'),
@@ -81,7 +81,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
  *   and emits: transcription-* events
  */
 contextBridge.exposeInMainWorld("transcription", {
-  start: () => ipcRenderer.invoke("start-transcription"),
+  start: (metadata) => ipcRenderer.invoke("start-transcription", metadata),
   stop: () => ipcRenderer.invoke("stop-transcription"),
   status: () => ipcRenderer.invoke("get-transcription-status"),
   sendAudio: (uint8) => ipcRenderer.invoke("send-audio-data", uint8),
@@ -163,6 +163,27 @@ contextBridge.exposeInMainWorld("transcriptStorage", {
   exportTranscript: (sessionId, format) => ipcRenderer.invoke("transcript:export", { sessionId, format }),
   getSessions: (limit) => ipcRenderer.invoke("transcript:get-sessions", limit),
   getStats: () => ipcRenderer.invoke("transcript:get-stats"),
+  listClasses: () => ipcRenderer.invoke("storage:classes:list"),
+  saveClass: (payload) => ipcRenderer.invoke("storage:classes:save", payload),
+  deleteClass: (classId) => ipcRenderer.invoke("storage:classes:delete", classId),
+  listTranscriptions: (opts) => ipcRenderer.invoke("storage:transcriptions:list", opts),
+  saveTranscription: (payload) => ipcRenderer.invoke("storage:transcriptions:save", payload),
+  getTranscription: (id) => ipcRenderer.invoke("storage:transcriptions:get", id),
+  deleteTranscription: (id) => ipcRenderer.invoke("storage:transcriptions:delete", id),
+});
+
+contextBridge.exposeInMainWorld("transcriptionEvents", {
+  onUpdate: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('transcription-record:update', handler);
+    return () => ipcRenderer.removeListener('transcription-record:update', handler);
+  },
+});
+
+contextBridge.exposeInMainWorld("modelContext", {
+  get: () => ipcRenderer.invoke("model-context:get"),
+  save: (settings) => ipcRenderer.invoke("model-context:save", settings),
 });
 
 /**

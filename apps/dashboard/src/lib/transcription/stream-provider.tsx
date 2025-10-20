@@ -69,6 +69,39 @@ type AiUpdatePayload =
 
 export function TranscriptionStreamProvider({ children }: React.PropsWithChildren) {
   const { activeRecordId, updateTranscription, setActiveRecordId } = useDashboardData();
+  const bridge = typeof window !== "undefined" ? window.transcriptStorage : undefined;
+  const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
+  const sessionIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    sessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const ensureSession = async () => {
+      if (!activeRecordId || !bridge?.getCurrentSession) {
+        setActiveSessionId(null);
+        return;
+      }
+      try {
+        const response = await bridge.getCurrentSession();
+        if (cancelled) return;
+        const sessionId: string | null = response?.sessionId ?? null;
+        setActiveSessionId(sessionId);
+        if (sessionId) {
+          updateTranscription(activeRecordId, (prev) =>
+            prev.sessionId === sessionId ? prev : { ...prev, sessionId }
+          );
+        }
+      } catch (error) {
+        console.warn("[TranscriptionStreamProvider] Failed to resolve current session", error);
+      }
+    };
+    ensureSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRecordId, bridge, updateTranscription]);
 
   React.useEffect(() => {
     const transcription: TranscriptionBridge | undefined =
@@ -101,7 +134,9 @@ export function TranscriptionStreamProvider({ children }: React.PropsWithChildre
 
         return {
           ...prev,
+          sessionId: prev.sessionId ?? sessionIdRef.current ?? prev.sessionId,
           content,
+          fullText: content,
           segments: nextSegments,
           wordCount: (prev.wordCount ?? 0) + words,
           durationMinutes,
@@ -170,23 +205,47 @@ export function TranscriptionStreamProvider({ children }: React.PropsWithChildre
 
     const unsubscribe = transcription.onDisconnected?.(() => {
       if (!activeRecordId) return;
-      updateTranscription(activeRecordId, (prev) => ({
-        ...prev,
-        status: "completed",
-        summary:
-          prev.summary ??
-          (prev.content ? `${prev.content.split("\n").slice(0, 2).join(" ")}…` : "Recording completed."),
-        durationMinutes:
-          prev.durationMinutes ||
-          Math.max(1, differenceInMinutes(new Date(), new Date(prev.createdAt))),
-      }));
-      setActiveRecordId(null);
+      const sessionId = sessionIdRef.current;
+      const finalize = async () => {
+        let fullTranscript: string | undefined;
+        if (sessionId && bridge?.getFullTranscript) {
+          try {
+            const response = await bridge.getFullTranscript(sessionId);
+            if (response?.success && typeof response.transcript === "string") {
+              fullTranscript = response.transcript;
+            }
+          } catch (error) {
+            console.warn("[TranscriptionStreamProvider] Failed to fetch full transcript", error);
+          }
+        }
+
+        updateTranscription(activeRecordId, (prev) => ({
+          ...prev,
+          sessionId: sessionId ?? prev.sessionId,
+          status: "completed",
+          content: fullTranscript ?? prev.content,
+          fullText: fullTranscript ?? prev.fullText ?? prev.content,
+          summary:
+            prev.summary ??
+            (fullTranscript
+              ? `${fullTranscript.split("\n").slice(0, 2).join(" ")}…`
+              : prev.content
+              ? `${prev.content.split("\n").slice(0, 2).join(" ")}…`
+              : "Recording completed."),
+          durationMinutes:
+            prev.durationMinutes ||
+            Math.max(1, differenceInMinutes(new Date(), new Date(prev.createdAt))),
+        }));
+        setActiveRecordId(null);
+        setActiveSessionId(null);
+      };
+      void finalize();
     });
 
     return () => {
       if (typeof unsubscribe === "function") unsubscribe();
     };
-  }, [activeRecordId, setActiveRecordId, updateTranscription]);
+  }, [activeRecordId, bridge, setActiveRecordId, updateTranscription]);
 
   return <>{children}</>;
 }

@@ -56,7 +56,6 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
 
   const createdAt = parseISO(record.createdAt);
   const classInfo = record.classId ? classes.find((cls) => cls.id === record.classId) : undefined;
-
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -149,8 +148,6 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
                 <p className="text-xs text-muted-foreground">No tags yet — add a few to help with search.</p>
               )}
             </section>
-
-            <Separator />
 
             <section className="space-y-3">
               <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Key points</h2>

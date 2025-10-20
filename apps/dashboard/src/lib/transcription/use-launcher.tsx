@@ -31,7 +31,9 @@ export type LaunchOutcome = LaunchContext & {
 
 type DesktopBridge = {
   openOverlay?: () => Promise<void> | void;
-  startTranscription?: () => Promise<{ success: boolean; error?: string } | void> | void;
+  startTranscription?: (
+    meta?: { classId?: string | null; recordId?: string | null; title?: string | null }
+  ) => Promise<{ success: boolean; error?: string } | void> | void;
 };
 
 type LaunchOptions = {
@@ -90,8 +92,9 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
         typeof window !== "undefined"
           ? (window as unknown as { desktop?: DesktopBridge }).desktop
           : undefined;
+      const transcriptionBridge = typeof window !== "undefined" ? window.transcription : undefined;
 
-      if (!onLaunch && !desktop?.openOverlay) {
+      if (!onLaunch && (!desktop?.openOverlay || !transcriptionBridge?.start)) {
         if (onFallback) {
           await onFallback(context);
         } else {
@@ -126,7 +129,11 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
         }
 
         await desktop?.openOverlay?.();
-        const startResult = await desktop?.startTranscription?.();
+        const startResult = await transcriptionBridge?.start?.({
+          classId: context.classId ?? null,
+          recordId,
+          title: context.sessionTitle ?? null,
+        });
         if (startResult && typeof startResult === "object" && "success" in startResult) {
           if (!startResult.success) {
             throw new Error(startResult.error ?? "Failed to start transcription");
@@ -153,7 +160,7 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
         setLaunching(false);
       }
     },
-    [addTranscription, buildContext, onFallback, onLaunch, setActiveRecordId, updateTranscription]
+    [addTranscription, buildContext, onFallback, onLaunch, setActiveRecordId, updateTranscription, setLastClassId]
   );
 
   const handleDialogConfirm = React.useCallback(async () => {
@@ -224,6 +231,7 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
               onChange={(event) => setSessionTitle(event.target.value)}
             />
           </div>
+
         </div>
 
         <DialogFooter className="pt-4">

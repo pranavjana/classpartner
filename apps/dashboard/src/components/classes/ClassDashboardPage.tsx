@@ -35,6 +35,7 @@ import type {
   SessionStatus,
 } from "@/lib/types/class-dashboard";
 import { cn } from "@/lib/utils";
+import { useCssVarColor, useIsDarkMode } from "@/lib/ui/useThemeColors";
 import {
   Select,
   SelectContent,
@@ -991,6 +992,10 @@ type AnalyticsPanelProps = {
 };
 
 function AnalyticsPanel({ stats, sessions }: AnalyticsPanelProps) {
+  const primaryColor = useCssVarColor("--primary", "hsl(221 83% 53%)");
+  const isDarkMode = useIsDarkMode();
+  const axisTickColor = isDarkMode ? "rgba(226, 232, 240, 0.92)" : "rgba(15, 23, 42, 0.88)";
+  const axisStrokeColor = isDarkMode ? "rgba(148, 163, 184, 0.5)" : "rgba(100, 116, 139, 0.6)";
   const lengthBuckets = React.useMemo(() => {
     const buckets: Record<string, number> = {
       "<30": 0,
@@ -1026,11 +1031,17 @@ function AnalyticsPanel({ stats, sessions }: AnalyticsPanelProps) {
             <AreaChart data={weeklyData}>
               <defs>
                 <linearGradient id="analyticsArea" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="var(--primary)" stopOpacity={0} />
+                  <stop offset="5%" stopColor={primaryColor} stopOpacity={0.25} />
+                  <stop offset="95%" stopColor={primaryColor} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <XAxis dataKey="week" axisLine={false} tickLine={false} stroke="hsl(var(--muted-foreground))" fontSize={12} />
+              <XAxis
+                dataKey="week"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fontSize: 12, fill: axisTickColor }}
+                stroke={axisStrokeColor}
+              />
               <YAxis hide />
               <RechartsTooltip
                 content={({ payload }) => {
@@ -1043,7 +1054,7 @@ function AnalyticsPanel({ stats, sessions }: AnalyticsPanelProps) {
                   );
                 }}
               />
-              <Area type="monotone" dataKey="hours" stroke="var(--primary)" fill="url(#analyticsArea)" strokeWidth={2} />
+              <Area type="monotone" dataKey="hours" stroke={primaryColor} fill="url(#analyticsArea)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         </CardContent>
@@ -1057,8 +1068,19 @@ function AnalyticsPanel({ stats, sessions }: AnalyticsPanelProps) {
         <CardContent className="h-[260px]">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={lengthBuckets}>
-              <XAxis dataKey="range" axisLine={false} tickLine={false} stroke="hsl(var(--muted-foreground))" />
-              <YAxis allowDecimals={false} />
+              <XAxis
+                dataKey="range"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: axisTickColor }}
+                stroke={axisStrokeColor}
+              />
+              <YAxis
+                allowDecimals={false}
+                tick={{ fill: axisTickColor }}
+                tickLine={false}
+                axisLine={{ stroke: axisStrokeColor }}
+              />
               <RechartsTooltip
                 cursor={{ fill: "hsl(var(--muted)/40%)" }}
                 content={({ payload }) => {
@@ -1071,7 +1093,7 @@ function AnalyticsPanel({ stats, sessions }: AnalyticsPanelProps) {
                   );
                 }}
               />
-              <Bar dataKey="count" fill="var(--primary)" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="count" fill={primaryColor} radius={[6, 6, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
