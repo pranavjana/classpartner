@@ -9,6 +9,7 @@ interface TranscriptionStorageBridge {
   listClasses: () => Promise<{ success: boolean; classes?: UnknownRecord[]; error?: string }>;
   saveClass: (payload: UnknownRecord) => Promise<{ success: boolean; class?: UnknownRecord; error?: string }>;
   deleteClass: (classId: string) => Promise<{ success: boolean; error?: string }>;
+  archiveClass: (classId: string, archived: boolean) => Promise<{ success: boolean; class?: UnknownRecord; error?: string }>;
   listTranscriptions: (opts?: UnknownRecord) => Promise<{ success: boolean; records?: UnknownRecord[]; error?: string }>;
   saveTranscription: (payload: UnknownRecord) => Promise<{ success: boolean; record?: UnknownRecord; error?: string }>;
   getTranscription: (id: string) => Promise<{ success: boolean; record?: UnknownRecord; error?: string }>;

@@ -646,6 +646,23 @@ Words: ${session.wordCount || 0}
     trx(classId);
   }
 
+  archiveClass(classId, archived = true) {
+    const existing = this.db.prepare(`SELECT metadata FROM classes WHERE id = ?`).get(classId);
+    if (!existing) throw new Error('Class not found');
+
+    const metadata =
+      existing.metadata && typeof existing.metadata === 'string'
+        ? JSON.parse(existing.metadata)
+        : {};
+    metadata.archived = archived ? 1 : 0;
+
+    this.db
+      .prepare(`UPDATE classes SET metadata = ?, updatedAt = ? WHERE id = ?`)
+      .run(JSON.stringify(metadata), Date.now(), classId);
+
+    return this.getClass(classId);
+  }
+
   // ----- Transcription record management -----
   upsertTranscriptionRecord(record) {
     const payload = {
@@ -716,15 +733,18 @@ Words: ${session.wordCount || 0}
 
   // ----- Helpers -----
   mapClass(row) {
+    const metadata =
+      row.metadata && typeof row.metadata === 'string' ? JSON.parse(row.metadata) : undefined;
     return {
       id: row.id,
       code: row.code || undefined,
       name: row.name,
       colour: row.colour || undefined,
       semester: row.semester || undefined,
-      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      metadata,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      archived: metadata?.archived ? Boolean(metadata.archived) : false,
     };
   }
 

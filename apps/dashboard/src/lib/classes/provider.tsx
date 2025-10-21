@@ -9,15 +9,18 @@ export type ClassItem = {
   slug: string;
   /** optional count shown in UI; defaults to 0 when missing */
   transcriptions?: number;
+  archived?: boolean;
 };
 
 type ClassesContextValue = {
   ready: boolean;
   classes: ClassItem[];
+  archivedClasses: ClassItem[];
   pinnedIds: string[];
   addClass: (item: ClassItem) => void;
   renameClass: (id: string, patch: Pick<ClassItem, "code" | "name">) => void;
-  deleteClass: (id: string) => void;
+  deleteClass: (id: string) => Promise<{ success: boolean; error?: string }>;
+  archiveClass: (id: string, archived?: boolean) => Promise<{ success: boolean; error?: string }>;
   togglePin: (id: string) => void;
   setClasses: React.Dispatch<React.SetStateAction<ClassItem[]>>;
   setPinnedIds: React.Dispatch<React.SetStateAction<string[]>>;
@@ -37,7 +40,7 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
   const useBridge = Boolean(bridge);
 
   const [ready, setReady] = React.useState(false);
-  const [classes, setClasses] = React.useState<ClassItem[]>([]);
+  const [allClasses, setAllClasses] = React.useState<ClassItem[]>([]);
   const [pinnedIds, setPinnedIds] = React.useState<string[]>([]);
 
   React.useEffect(() => {
@@ -91,18 +94,18 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
             }
           }
 
-          if (!cancelled) {
-            setClasses(items);
-          }
+      if (!cancelled) {
+        setAllClasses(items);
+      }
         } catch (error) {
           console.error("[ClassesProvider] Failed to load classes from SQLite:", error);
           if (!cancelled) {
-            setClasses(storedClasses ?? seed);
+            setAllClasses(storedClasses ?? seed);
           }
         }
       } else {
         if (!cancelled) {
-          setClasses(storedClasses ?? seed);
+          setAllClasses(storedClasses ?? seed);
         }
       }
 
@@ -123,23 +126,34 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
     try {
       localStorage.setItem(LS_PINNED, JSON.stringify(pinnedIds));
       if (!useBridge) {
-        localStorage.setItem(LS_CLASSES, JSON.stringify(classes));
+        localStorage.setItem(LS_CLASSES, JSON.stringify(allClasses));
       }
     } catch (error) {
       console.warn("[ClassesProvider] Failed to persist classes", error);
     }
-  }, [classes, pinnedIds, ready, useBridge]);
+  }, [allClasses, pinnedIds, ready, useBridge]);
 
-  const addClass = React.useCallback(
+  const activeClasses = React.useMemo(
+    () => allClasses.filter((cls) => !cls.archived),
+    [allClasses]
+  );
+
+  const archivedClasses = React.useMemo(
+    () => allClasses.filter((cls) => cls.archived),
+    [allClasses]
+  );
+
+const addClass = React.useCallback(
     (item: ClassItem) => {
-      setClasses((prev) => [...prev, item]);
+      const nextItem: ClassItem = { ...item, archived: Boolean(item.archived) };
+      setAllClasses((prev) => [...prev, nextItem]);
       if (useBridge && bridge) {
         bridge
-          .saveClass(classItemToBridgePayload(item))
+          .saveClass(classItemToBridgePayload(nextItem))
           .then((res) => {
             if (res?.success && res.class) {
               const mapped = mapBridgeClassRecord(res.class);
-              setClasses((prev) => prev.map((cls) => (cls.id === mapped.id ? mapped : cls)));
+              setAllClasses((prev) => prev.map((cls) => (cls.id === mapped.id ? mapped : cls)));
             }
           })
           .catch((error) => console.error("[ClassesProvider] Failed to save class:", error));
@@ -151,7 +165,7 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
   const renameClass = React.useCallback(
     (id: string, patch: Pick<ClassItem, "code" | "name">) => {
       let nextClass: ClassItem | null = null;
-      setClasses((prev) =>
+      setAllClasses((prev) =>
         prev.map((c) => {
           if (c.id !== id) return c;
           const updated: ClassItem = {
@@ -170,7 +184,7 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
           .then((res) => {
             if (res?.success && res.class) {
               const mapped = mapBridgeClassRecord(res.class);
-              setClasses((prev) => prev.map((cls) => (cls.id === mapped.id ? mapped : cls)));
+              setAllClasses((prev) => prev.map((cls) => (cls.id === mapped.id ? mapped : cls)));
             }
           })
           .catch((error) => console.error("[ClassesProvider] Failed to rename class:", error));
@@ -180,12 +194,58 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
   );
 
   const deleteClass = React.useCallback(
-    (id: string) => {
-      setClasses((prev) => prev.filter((c) => c.id !== id));
-      setPinnedIds((prev) => prev.filter((pid) => pid !== id));
+    async (id: string): Promise<{ success: boolean; error?: string }> => {
       if (useBridge && bridge) {
-        bridge.deleteClass(id).catch((error) => console.error("[ClassesProvider] Failed to delete class:", error));
+        try {
+          const response = await bridge.deleteClass(id);
+          if (!response?.success) {
+            const message = response?.error ?? "Failed to delete class";
+            return { success: false, error: message };
+          }
+        } catch (error) {
+          console.error("[ClassesProvider] Failed to delete class:", error);
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
       }
+
+      setAllClasses((prev) => prev.filter((c) => c.id !== id));
+      setPinnedIds((prev) => prev.filter((pid) => pid !== id));
+      return { success: true };
+    },
+    [bridge, useBridge]
+  );
+
+  const archiveClass = React.useCallback(
+    async (id: string, archived: boolean = true): Promise<{ success: boolean; error?: string }> => {
+      let mapped: ClassItem | null = null;
+      if (useBridge && bridge?.archiveClass) {
+        try {
+          const response = await bridge.archiveClass(id, archived);
+          if (!response?.success) {
+            const message = response?.error ?? "Failed to update class";
+            return { success: false, error: message };
+          }
+          if (response.class) {
+            mapped = mapBridgeClassRecord(response.class as Record<string, unknown>);
+          }
+        } catch (error) {
+          console.error("[ClassesProvider] Failed to archive class:", error);
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+
+      setAllClasses((prev) => {
+        const next = prev.map((cls) =>
+          cls.id === id ? mapped ?? { ...cls, archived } : cls
+        );
+        return next;
+      });
+
+      if (archived) {
+        setPinnedIds((prev) => prev.filter((pid) => pid !== id));
+      }
+
+      return { success: true };
     },
     [bridge, useBridge]
   );
@@ -196,15 +256,22 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
     []
   );
 
+  React.useEffect(() => {
+    if (!ready) return;
+    setPinnedIds((prev) => prev.filter((id) => activeClasses.some((cls) => cls.id === id)));
+  }, [activeClasses, ready]);
+
   const value: ClassesContextValue = {
     ready,
-    classes,
+    classes: activeClasses,
+    archivedClasses,
     pinnedIds,
     addClass,
     renameClass,
     deleteClass,
+    archiveClass,
     togglePin,
-    setClasses,
+    setClasses: setAllClasses,
     setPinnedIds,
   };
 
@@ -222,11 +289,20 @@ function slugify(s: string) {
 }
 
 function classItemToBridgePayload(item: ClassItem) {
+  const metadata: Record<string, unknown> = {
+    slug: item.slug,
+    archived: item.archived ?? false,
+  };
+
+  if (typeof item.transcriptions === "number") {
+    metadata.transcriptions = item.transcriptions;
+  }
+
   return {
     id: item.id,
     code: item.code || undefined,
     name: item.name,
-    metadata: { slug: item.slug },
+    metadata,
     createdAt: Date.now(),
   };
 }
@@ -241,6 +317,7 @@ function mapBridgeClassRecord(raw: Record<string, unknown>): ClassItem {
   const slug = slugFromMeta ?? slugify(`${code || name}-${id}`);
   const transcriptions =
     typeof metadata.transcriptions === "number" ? metadata.transcriptions : undefined;
+  const archived = typeof metadata.archived === "boolean" ? metadata.archived : Boolean(metadata.archived);
 
   return {
     id,
@@ -248,5 +325,6 @@ function mapBridgeClassRecord(raw: Record<string, unknown>): ClassItem {
     name,
     slug,
     transcriptions,
+    archived,
   };
 }

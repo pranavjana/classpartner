@@ -166,6 +166,7 @@ contextBridge.exposeInMainWorld("transcriptStorage", {
   listClasses: () => ipcRenderer.invoke("storage:classes:list"),
   saveClass: (payload) => ipcRenderer.invoke("storage:classes:save", payload),
   deleteClass: (classId) => ipcRenderer.invoke("storage:classes:delete", classId),
+  archiveClass: (classId, archived) => ipcRenderer.invoke("storage:classes:archive", { classId, archived }),
   listTranscriptions: (opts) => ipcRenderer.invoke("storage:transcriptions:list", opts),
   saveTranscription: (payload) => ipcRenderer.invoke("storage:transcriptions:save", payload),
   getTranscription: (id) => ipcRenderer.invoke("storage:transcriptions:get", id),

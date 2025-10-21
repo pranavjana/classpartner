@@ -840,6 +840,17 @@ function setupIpcHandlers() {
     }
   });
 
+  ipcMain.handle('storage:classes:archive', (_evt, { classId, archived = true }) => {
+    try {
+      if (!classId) return { success: false, error: 'classId is required' };
+      ensureTranscriptStorage();
+      const updated = transcriptStorage.archiveClass(classId, archived);
+      return { success: true, class: updated };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
   ipcMain.handle('storage:transcriptions:list', (_evt, opts = {}) => {
     try {
       ensureTranscriptStorage();

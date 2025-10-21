@@ -67,6 +67,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { useClasses } from "@/lib/classes/provider";
 
 type ClassDashboardPageProps = {
   detail: ClassDashboardDetail;
@@ -84,6 +85,7 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
     addTranscription,
     deleteTranscription,
   } = useDashboardData();
+  const { deleteClass: removeClass, archiveClass: archiveClassProvider } = useClasses();
   const queryTab = searchParams?.get("tab") ?? undefined;
   const [activeTab, setActiveTab] = React.useState<string>(queryTab ?? DEFAULT_TAB);
   const [uploadFeedback, setUploadFeedback] = React.useState<string | null>(null);
@@ -91,6 +93,12 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
   const [renameTarget, setRenameTarget] = React.useState<TranscriptionRecord | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
   const [deleteTarget, setDeleteTarget] = React.useState<TranscriptionRecord | null>(null);
+  const [archiveDialogOpen, setArchiveDialogOpen] = React.useState(false);
+  const [deleteClassDialogOpen, setDeleteClassDialogOpen] = React.useState(false);
+  const [archiveError, setArchiveError] = React.useState<string | null>(null);
+  const [deleteClassError, setDeleteClassError] = React.useState<string | null>(null);
+  const [archiveBusy, setArchiveBusy] = React.useState(false);
+  const [deleteClassBusy, setDeleteClassBusy] = React.useState(false);
   const { launch, launching, dialog } = useTranscriptionLauncher({
     defaultClassId: detail.classInfo.id,
     defaultTitle: `${detail.classInfo.code ?? detail.classInfo.name ?? "Live capture"}`,
@@ -136,6 +144,46 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
       setUploadFeedback(`Upload complete. Session created for ${detail.classInfo.code ?? detail.classInfo.id}.`);
     }, 1400);
   };
+
+  const handleArchiveClass = React.useCallback(async () => {
+    setArchiveError(null);
+    setArchiveBusy(true);
+    const result = await archiveClassProvider(detail.classInfo.id, true);
+    setArchiveBusy(false);
+    if (result.success) {
+      setArchiveDialogOpen(false);
+      router.push("/classes/workspace");
+      router.refresh();
+    } else {
+      setArchiveError(result.error ?? "Failed to archive class");
+    }
+  }, [archiveClassProvider, detail.classInfo.id, router]);
+
+  const handleDeleteClass = React.useCallback(async () => {
+    setDeleteClassError(null);
+    setDeleteClassBusy(true);
+    const result = await removeClass(detail.classInfo.id);
+    setDeleteClassBusy(false);
+    if (result.success) {
+      setDeleteClassDialogOpen(false);
+      router.push("/classes/workspace");
+      router.refresh();
+    } else {
+      setDeleteClassError(result.error ?? "Failed to delete class");
+    }
+  }, [removeClass, detail.classInfo.id, router]);
+
+  const openArchiveDialog = React.useCallback(() => {
+    if (!detail.permissions.canEdit) return;
+    setArchiveError(null);
+    setArchiveDialogOpen(true);
+  }, [detail.permissions.canEdit]);
+
+  const openDeleteDialog = React.useCallback(() => {
+    if (!detail.permissions.canDelete) return;
+    setDeleteClassError(null);
+    setDeleteClassDialogOpen(true);
+  }, [detail.permissions.canDelete]);
 
   const classTranscriptions = React.useMemo(
     () => transcriptionsForClass(detail.classInfo.id),
@@ -316,13 +364,22 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
               <DropdownMenuContent align="end" className="w-48">
                 <DropdownMenuItem onSelect={() => alert("Rename class (stub)")}>Rename</DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => alert("Pin / Unpin class (stub)")}>Pin / Unpin</DropdownMenuItem>
-                <DropdownMenuItem disabled={!detail.permissions.canEdit} onSelect={() => alert("Archive class (stub)")}>
+                <DropdownMenuItem
+                  disabled={!detail.permissions.canEdit || archiveBusy}
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    openArchiveDialog();
+                  }}
+                >
                   Archive
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  disabled={!detail.permissions.canDelete}
+                  disabled={!detail.permissions.canDelete || deleteClassBusy}
                   className="text-destructive focus:text-destructive"
-                  onSelect={() => alert("Delete class (stub)")}
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    openDeleteDialog();
+                  }}
                 >
                   Delete
                 </DropdownMenuItem>
@@ -377,7 +434,13 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
         </TabsContent>
 
         <TabsContent value="settings">
-          <SettingsPanel detail={detail} />
+          <SettingsPanel
+            detail={detail}
+            onArchiveClass={openArchiveDialog}
+            onDeleteClass={openDeleteDialog}
+            archiveBusy={archiveBusy}
+            deleteBusy={deleteClassBusy}
+          />
         </TabsContent>
       </Tabs>
       <Dialog
@@ -422,7 +485,70 @@ export default function ClassDashboardPage({ detail }: ClassDashboardPageProps) 
         </DialogContent>
       </Dialog>
 
+            <AlertDialog
+        open={archiveDialogOpen}
+        onOpenChange={(open) => {
+          if (archiveBusy) return;
+          setArchiveDialogOpen(open);
+          if (open) setArchiveError(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive class?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Archiving <span className="font-medium text-foreground">{detail.classInfo.name}</span> hides it from your workspace without deleting its transcripts. You can restore it later from settings.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {archiveError ? <p className="text-sm text-destructive">{archiveError}</p> : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={archiveBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={archiveBusy}
+              onClick={async (event) => {
+                event.preventDefault();
+                await handleArchiveClass();
+              }}
+            >
+              {archiveBusy ? "Archiving…" : "Archive"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog
+        open={deleteClassDialogOpen}
+        onOpenChange={(open) => {
+          if (deleteClassBusy) return;
+          setDeleteClassDialogOpen(open);
+          if (open) setDeleteClassError(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete class?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove <span className="font-medium text-foreground">{detail.classInfo.name}</span> and all of its transcripts. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteClassError ? <p className="text-sm text-destructive">{deleteClassError}</p> : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteClassBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              disabled={deleteClassBusy}
+              onClick={async (event) => {
+                event.preventDefault();
+                await handleDeleteClass();
+              }}
+            >
+              {deleteClassBusy ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+  <AlertDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
           if (!open) setDeleteTarget(null);
@@ -1114,9 +1240,13 @@ function AnalyticsPanel({ stats, sessions }: AnalyticsPanelProps) {
 
 type SettingsPanelProps = {
   detail: ClassDashboardDetail;
+  onArchiveClass: () => void;
+  onDeleteClass: () => void;
+  archiveBusy?: boolean;
+  deleteBusy?: boolean;
 };
 
-function SettingsPanel({ detail }: SettingsPanelProps) {
+function SettingsPanel({ detail, onArchiveClass, onDeleteClass, archiveBusy = false, deleteBusy = false }: SettingsPanelProps) {
   const { classInfo, permissions } = detail;
   const [name, setName] = React.useState(classInfo.name);
   const [code, setCode] = React.useState(classInfo.code ?? "");
@@ -1240,16 +1370,21 @@ function SettingsPanel({ detail }: SettingsPanelProps) {
             <CardDescription>Archive or permanently delete this class.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            <Button variant="outline" className="justify-start" onClick={() => alert("Archive class (stub)")}>
-              Archive class
+            <Button
+              variant="outline"
+              className="justify-start"
+              disabled={!permissions.canEdit || archiveBusy}
+              onClick={onArchiveClass}
+            >
+              {archiveBusy ? "Archiving…" : "Archive class"}
             </Button>
             <Button
               variant="destructive"
               className="justify-start"
-              disabled={!permissions.canDelete}
-              onClick={() => alert("Delete class (stub)")}
+              disabled={!permissions.canDelete || deleteBusy}
+              onClick={onDeleteClass}
             >
-              Delete class
+              {deleteBusy ? "Deleting…" : "Delete class"}
             </Button>
           </CardContent>
         </Card>
