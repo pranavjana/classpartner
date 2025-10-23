@@ -47,6 +47,67 @@ class TranscriptStorage {
         ON segments(timestamp);
       CREATE INDEX IF NOT EXISTS idx_sessions_startTime
         ON sessions(startTime DESC);
+
+      CREATE TABLE IF NOT EXISTS classes (
+        id TEXT PRIMARY KEY,
+        code TEXT,
+        name TEXT NOT NULL,
+        colour TEXT,
+        semester TEXT,
+        metadata TEXT,
+        createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS transcription_records (
+        id TEXT PRIMARY KEY,
+        sessionId TEXT,
+        classId TEXT,
+        title TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        durationMinutes INTEGER DEFAULT 0,
+        wordCount INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'draft',
+        summary TEXT,
+        keyPoints TEXT,
+        actionItems TEXT,
+        content TEXT,
+        tags TEXT,
+        flagged INTEGER DEFAULT 0,
+        FOREIGN KEY(sessionId) REFERENCES sessions(id),
+        FOREIGN KEY(classId) REFERENCES classes(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_transcription_records_class
+        ON transcription_records(classId);
+      CREATE INDEX IF NOT EXISTS idx_transcription_records_createdAt
+        ON transcription_records(createdAt DESC);
+
+      CREATE TABLE IF NOT EXISTS class_context_sources (
+        id TEXT PRIMARY KEY,
+        classId TEXT NOT NULL,
+        fileName TEXT NOT NULL,
+        fileHash TEXT NOT NULL,
+        uploadedAt INTEGER NOT NULL,
+        metadata TEXT,
+        UNIQUE(classId, fileHash)
+      );
+
+      CREATE TABLE IF NOT EXISTS class_context_segments (
+        id TEXT PRIMARY KEY,
+        sourceId TEXT NOT NULL,
+        classId TEXT NOT NULL,
+        orderIndex INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        embedding TEXT,
+        metadata TEXT,
+        FOREIGN KEY(sourceId) REFERENCES class_context_sources(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_context_segments_class
+        ON class_context_segments(classId, orderIndex);
+      CREATE INDEX IF NOT EXISTS idx_context_segments_source
+        ON class_context_segments(sourceId, orderIndex);
     `);
   }
 
@@ -381,6 +442,134 @@ Words: ${session.wordCount || 0}
     return hits.slice(0, limit);
   }
 
+  // ---------- Class context (knowledge base) ----------
+  getClassContextSourceByHash(classId, fileHash) {
+    return this.db
+      .prepare(`SELECT * FROM class_context_sources WHERE classId = ? AND fileHash = ?`)
+      .get(classId, fileHash);
+  }
+
+  getClassContextSources(classId) {
+    return this.db
+      .prepare(
+        `SELECT * FROM class_context_sources WHERE classId = ? ORDER BY uploadedAt DESC`
+      )
+      .all(classId);
+  }
+
+  createClassContextSource({ id, classId, fileName, fileHash, metadata }) {
+    this.db
+      .prepare(`
+        INSERT OR REPLACE INTO class_context_sources
+        (id, classId, fileName, fileHash, uploadedAt, metadata)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        id,
+        classId,
+        fileName,
+        fileHash,
+        Date.now(),
+        metadata ? JSON.stringify(metadata) : null
+      );
+    return id;
+  }
+
+  deleteClassContextSource(sourceId) {
+    const deleteSegments = this.db.prepare(
+      `DELETE FROM class_context_segments WHERE sourceId = ?`
+    );
+    const deleteSource = this.db.prepare(
+      `DELETE FROM class_context_sources WHERE id = ?`
+    );
+    const transaction = this.db.transaction((id) => {
+      deleteSegments.run(id);
+      deleteSource.run(id);
+    });
+    transaction(sourceId);
+  }
+
+  saveClassContextSegments(sourceId, classId, segments) {
+    const insert = this.db.prepare(`
+      INSERT OR REPLACE INTO class_context_segments
+      (id, sourceId, classId, orderIndex, text, embedding, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const insertMany = this.db.transaction((items) => {
+      for (const seg of items) {
+        insert.run(
+          seg.id,
+          sourceId,
+          classId,
+          seg.orderIndex,
+          seg.text,
+          seg.embedding ? JSON.stringify(Array.from(seg.embedding)) : null,
+          seg.metadata ? JSON.stringify(seg.metadata) : null
+        );
+      }
+    });
+
+    insertMany(segments);
+  }
+
+  getClassContextPrimer(classId, limit = 5) {
+    const rows = this.db
+      .prepare(
+        `SELECT id, text, orderIndex, sourceId, metadata, classId FROM class_context_segments
+         WHERE classId = ?
+         ORDER BY orderIndex ASC
+         LIMIT ?`
+      )
+      .all(classId, limit);
+
+    return rows.map((row) => ({
+      id: row.id,
+      text: row.text,
+      orderIndex: row.orderIndex,
+      sourceId: row.sourceId,
+      metadata: row.metadata ? JSON.parse(row.metadata) : null,
+      classId: row.classId,
+    }));
+  }
+
+  searchSimilarClass(classId, queryEmbedding, limit = 10, excludeIds = []) {
+    const rows = this.db
+      .prepare(
+        `SELECT id, sourceId, classId, orderIndex, text, metadata, embedding
+         FROM class_context_segments
+         WHERE classId = ? AND embedding IS NOT NULL`
+      )
+      .all(classId);
+
+    if (!rows.length) return [];
+
+    const hits = [];
+    for (const row of rows) {
+      if (excludeIds.includes(row.id)) continue;
+      try {
+        const embedding = new Float32Array(JSON.parse(row.embedding));
+        const score = this.cosineSimilarity(queryEmbedding, embedding);
+        hits.push({
+          score,
+          segment: {
+            id: row.id,
+            sourceId: row.sourceId,
+            classId: row.classId,
+            orderIndex: row.orderIndex,
+            text: row.text,
+            metadata: row.metadata ? JSON.parse(row.metadata) : null,
+          },
+        });
+      } catch (error) {
+        console.warn('[TranscriptStorage] Failed to parse context embedding for segment:', row.id);
+      }
+    }
+
+    hits.sort((a, b) => b.score - a.score);
+    return hits.slice(0, limit);
+  }
+
   cosineSimilarity(vecA, vecB) {
     let dotProduct = 0;
     let normA = 0;
@@ -404,6 +593,179 @@ Words: ${session.wordCount || 0}
     this.db.prepare('DELETE FROM segments WHERE sessionId = ?').run(sessionId);
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
     console.log('[TranscriptStorage] Deleted session:', sessionId);
+  }
+
+  // ----- Class management -----
+  upsertClass(classData) {
+    const now = Date.now();
+    const payload = {
+      id: classData.id,
+      code: classData.code || null,
+      name: classData.name,
+      colour: classData.colour || null,
+      semester: classData.semester || null,
+      metadata: classData.metadata ? JSON.stringify(classData.metadata) : null,
+      createdAt: classData.createdAt || now,
+      updatedAt: now,
+    };
+
+    this.db
+      .prepare(
+        `INSERT INTO classes (id, code, name, colour, semester, metadata, createdAt, updatedAt)
+         VALUES (@id, @code, @name, @colour, @semester, @metadata, @createdAt, @updatedAt)
+         ON CONFLICT(id) DO UPDATE SET
+           code=excluded.code,
+           name=excluded.name,
+           colour=excluded.colour,
+           semester=excluded.semester,
+           metadata=excluded.metadata,
+           updatedAt=excluded.updatedAt`
+      )
+      .run(payload);
+
+    return this.getClass(payload.id);
+  }
+
+  getClass(classId) {
+    const row = this.db.prepare(`SELECT * FROM classes WHERE id = ?`).get(classId);
+    return row ? this.mapClass(row) : null;
+  }
+
+  listClasses() {
+    return this.db
+      .prepare(`SELECT * FROM classes ORDER BY name COLLATE NOCASE ASC`)
+      .all()
+      .map((row) => this.mapClass(row));
+  }
+
+  deleteClass(classId) {
+    const trx = this.db.transaction((id) => {
+      this.db.prepare(`DELETE FROM transcription_records WHERE classId = ?`).run(id);
+      this.db.prepare(`DELETE FROM classes WHERE id = ?`).run(id);
+    });
+    trx(classId);
+  }
+
+  archiveClass(classId, archived = true) {
+    const existing = this.db.prepare(`SELECT metadata FROM classes WHERE id = ?`).get(classId);
+    if (!existing) throw new Error('Class not found');
+
+    const metadata =
+      existing.metadata && typeof existing.metadata === 'string'
+        ? JSON.parse(existing.metadata)
+        : {};
+    metadata.archived = archived ? 1 : 0;
+
+    this.db
+      .prepare(`UPDATE classes SET metadata = ?, updatedAt = ? WHERE id = ?`)
+      .run(JSON.stringify(metadata), Date.now(), classId);
+
+    return this.getClass(classId);
+  }
+
+  // ----- Transcription record management -----
+  upsertTranscriptionRecord(record) {
+    const payload = {
+      id: record.id,
+      sessionId: record.sessionId || null,
+      classId: record.classId || null,
+      title: record.title,
+      createdAt: record.createdAt || Date.now(),
+      durationMinutes: record.durationMinutes ?? 0,
+      wordCount: record.wordCount ?? 0,
+      status: record.status || "draft",
+      summary: record.summary || null,
+      keyPoints: record.keyPoints ? JSON.stringify(record.keyPoints) : null,
+      actionItems: record.actionItems ? JSON.stringify(record.actionItems) : null,
+      content: record.content || record.fullText || null,
+      tags: record.tags ? JSON.stringify(record.tags) : null,
+      flagged: record.flagged ? 1 : 0,
+    };
+
+    this.db
+      .prepare(
+        `INSERT INTO transcription_records
+         (id, sessionId, classId, title, createdAt, durationMinutes, wordCount, status,
+          summary, keyPoints, actionItems, content, tags, flagged)
+         VALUES (@id, @sessionId, @classId, @title, @createdAt, @durationMinutes, @wordCount, @status,
+          @summary, @keyPoints, @actionItems, @content, @tags, @flagged)
+         ON CONFLICT(id) DO UPDATE SET
+          sessionId=excluded.sessionId,
+          classId=excluded.classId,
+          title=excluded.title,
+          durationMinutes=excluded.durationMinutes,
+          wordCount=excluded.wordCount,
+          status=excluded.status,
+          summary=excluded.summary,
+          keyPoints=excluded.keyPoints,
+          actionItems=excluded.actionItems,
+          content=excluded.content,
+          tags=excluded.tags,
+          flagged=excluded.flagged`
+      )
+      .run(payload);
+
+    return this.getTranscriptionRecord(payload.id);
+  }
+
+  getTranscriptionRecord(id) {
+    const row = this.db.prepare(`SELECT * FROM transcription_records WHERE id = ?`).get(id);
+    return row ? this.mapTranscriptionRecord(row) : null;
+  }
+
+  listTranscriptionRecords({ classId = null, limit = 100 } = {}) {
+    const stmt = classId
+      ? this.db.prepare(
+          `SELECT * FROM transcription_records WHERE classId = ?
+           ORDER BY createdAt DESC LIMIT ?`
+        )
+      : this.db.prepare(
+          `SELECT * FROM transcription_records
+           ORDER BY createdAt DESC LIMIT ?`
+        );
+    const rows = classId ? stmt.all(classId, limit) : stmt.all(limit);
+    return rows.map((row) => this.mapTranscriptionRecord(row));
+  }
+
+  deleteTranscriptionRecord(id) {
+    this.db.prepare(`DELETE FROM transcription_records WHERE id = ?`).run(id);
+  }
+
+  // ----- Helpers -----
+  mapClass(row) {
+    const metadata =
+      row.metadata && typeof row.metadata === 'string' ? JSON.parse(row.metadata) : undefined;
+    return {
+      id: row.id,
+      code: row.code || undefined,
+      name: row.name,
+      colour: row.colour || undefined,
+      semester: row.semester || undefined,
+      metadata,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      archived: metadata?.archived ? Boolean(metadata.archived) : false,
+    };
+  }
+
+  mapTranscriptionRecord(row) {
+    return {
+      id: row.id,
+      sessionId: row.sessionId || undefined,
+      classId: row.classId || undefined,
+      title: row.title,
+      createdAt: row.createdAt,
+      durationMinutes: row.durationMinutes ?? 0,
+      wordCount: row.wordCount ?? 0,
+      status: row.status,
+      summary: row.summary || undefined,
+      keyPoints: row.keyPoints ? JSON.parse(row.keyPoints) : undefined,
+      actionItems: row.actionItems ? JSON.parse(row.actionItems) : undefined,
+      content: row.content || undefined,
+      tags: row.tags ? JSON.parse(row.tags) : undefined,
+      flagged: Boolean(row.flagged),
+      fullText: row.content || undefined,
+    };
   }
 
   // Stats and diagnostics

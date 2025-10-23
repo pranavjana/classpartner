@@ -1,6 +1,7 @@
 // src/index.js
 const { app, BrowserWindow, ipcMain, screen, globalShortcut, shell } = require('electron');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const Store = require('electron-store');
 require('dotenv').config();
 
@@ -9,6 +10,7 @@ const { AIPipeline } = require('../src/services/ai/pipeline');          // ⬅ a
 const TranscriptStorage = require('../src/services/transcriptStorage'); // NEW: SQLite storage
 
 const store = new Store();
+const MODEL_CONTEXT_KEY = 'modelContext';
 const isDev = !app.isPackaged;
 const PRELOAD = path.join(__dirname, 'preload.js');
 
@@ -20,6 +22,7 @@ let deepgramService = null;
 let aiPipeline = null;
 let transcriptStorage = null; // NEW: Storage service
 let currentSessionId = null;  // NEW: Track current recording session
+let currentSessionMeta = { classId: null, recordId: null };
 
 // ---------- helpers
 function sendToAll(channel, payload) {
@@ -28,6 +31,195 @@ function sendToAll(channel, payload) {
 }
 function cryptoRandomId() {
   return 'seg_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+const pendingContextIngest = new Map();
+
+function hashText(text) {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+function normalizeContextText(text) {
+  return typeof text === 'string'
+    ? text.replace(/\u0000/g, '').replace(/\r\n?/g, '\n').trim()
+    : '';
+}
+
+function splitIntoSentences(paragraph) {
+  if (!paragraph) return [];
+  const cleaned = paragraph.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return [];
+  const matches = cleaned.match(/[^.!?]+[.!?]+|\S+$/g);
+  return matches ? matches.map((s) => s.trim()).filter(Boolean) : [cleaned];
+}
+
+function chunkClassContextText(text, options = {}) {
+  const maxChars = options.maxChars ?? 900;
+  const minChars = options.minChars ?? 300;
+  const overlapSentences = options.overlapSentences ?? 2;
+
+  const normalized = normalizeContextText(text);
+  if (!normalized) return [];
+
+  const paragraphs = normalized.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  const sentences = [];
+  paragraphs.forEach((paragraph) => {
+    const parts = splitIntoSentences(paragraph);
+    if (parts.length === 0) return;
+    parts.forEach((part) => sentences.push(part));
+  });
+
+  const chunks = [];
+  let currentSentences = [];
+
+  const joinSentences = (arr) => arr.join(' ').replace(/\s+/g, ' ').trim();
+  const pushChunk = (arr) => {
+    const joined = joinSentences(arr);
+    if (joined) chunks.push(joined);
+  };
+
+  for (const sentence of sentences) {
+    const clean = sentence.trim();
+    if (!clean) continue;
+
+    if (clean.length > maxChars) {
+      const words = clean.split(/\s+/);
+      let buffer = [];
+      for (const word of words) {
+        const candidate = buffer.length ? `${buffer.join(' ')} ${word}` : word;
+        if (candidate.length > maxChars && buffer.length) {
+          pushChunk(buffer);
+          buffer = overlapSentences ? buffer.slice(-overlapSentences) : [];
+          if (buffer.length) {
+            const fallback = joinSentences(buffer);
+            if (fallback.length > maxChars) buffer = [];
+          }
+        }
+        buffer.push(word);
+      }
+      if (buffer.length) {
+        const joined = buffer.join(' ');
+        if (joined.length > maxChars) {
+          pushChunk([joined]);
+        } else {
+          if (joinSentences([...currentSentences, joined]).length > maxChars && joinSentences(currentSentences).length >= minChars) {
+            pushChunk(currentSentences);
+            currentSentences = overlapSentences ? currentSentences.slice(-overlapSentences) : [];
+          }
+          currentSentences.push(joined);
+        }
+      }
+      continue;
+    }
+
+    const candidate = joinSentences([...currentSentences, clean]);
+    if (candidate.length > maxChars && joinSentences(currentSentences).length >= minChars) {
+      pushChunk(currentSentences);
+      currentSentences = overlapSentences ? currentSentences.slice(-overlapSentences) : [];
+    }
+    currentSentences.push(clean);
+  }
+
+  if (currentSentences.length) {
+    pushChunk(currentSentences);
+  }
+
+  return chunks;
+}
+
+function generateContextSourceId() {
+  return `ctxsrc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
+
+function formatActionItemPayload(item) {
+  if (!item) return '';
+  if (typeof item === 'string') {
+    return item.trim();
+  }
+  if (typeof item === 'object') {
+    const parts = [];
+    if (typeof item.title === 'string' && item.title.trim()) parts.push(item.title.trim());
+    if (typeof item.owner === 'string' && item.owner.trim()) parts.push(`@${item.owner.trim()}`);
+    if (typeof item.due === 'string' && item.due.trim()) parts.push(`(due ${item.due.trim()})`);
+    if (parts.length) return parts.join(' ');
+  }
+  return '';
+}
+
+function persistAiAnalysis(payload) {
+  try {
+    if (!payload || !currentSessionMeta?.recordId) return;
+    ensureTranscriptStorage();
+    const recordId = currentSessionMeta.recordId;
+    const existing =
+      transcriptStorage.getTranscriptionRecord(recordId) || {
+        id: recordId,
+        sessionId: currentSessionId,
+        classId: currentSessionMeta.classId,
+        title: recordId,
+        createdAt: Date.now(),
+        status: 'in-progress',
+      };
+
+    const summary =
+      typeof payload.summary === 'string' && payload.summary.trim().length
+        ? payload.summary.trim()
+        : existing.summary ?? null;
+
+    let keyPoints = existing.keyPoints ?? null;
+    if (Array.isArray(payload.keywords)) {
+      keyPoints = payload.keywords.map((kw) => String(kw).trim()).filter(Boolean);
+    }
+
+    let actionItems = existing.actionItems ?? null;
+    if (Array.isArray(payload.actions)) {
+      const formatted = payload.actions
+        .map((item) => formatActionItemPayload(item))
+        .filter((text) => text && text.length);
+      actionItems = formatted;
+    }
+
+    const updatePayload = {
+      ...existing,
+      summary,
+      keyPoints,
+      actionItems,
+    };
+
+    transcriptStorage.upsertTranscriptionRecord(updatePayload);
+    sendToAll('transcription-record:update', {
+      id: updatePayload.id,
+      summary: updatePayload.summary,
+      keyPoints: updatePayload.keyPoints,
+      actionItems: updatePayload.actionItems,
+    });
+  } catch (error) {
+    console.error('[AI ANALYSIS] Failed to persist transcription analysis:', error);
+  }
+}
+
+let docAnalysisProvider = null;
+let docAnalysisBusy = false;
+
+function ensureDocAnalysisProvider() {
+  if (docAnalysisProvider) return docAnalysisProvider;
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    console.warn('[AI DOC] OPENAI_API_KEY not set; cannot analyse documents with OpenAI.');
+    return null;
+  }
+  try {
+    docAnalysisProvider = createProvider({
+      provider: 'openai',
+      apiKey: openaiKey,
+      baseUrl: process.env.OPENAI_BASE_URL,
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    });
+  } catch (error) {
+    console.error('[AI DOC] Failed to initialise OpenAI provider', error);
+    docAnalysisProvider = null;
+  }
+  return docAnalysisProvider;
 }
 
 // ---------- dashboard window (Next UI)
@@ -118,11 +310,25 @@ function ensureTranscriptStorage() {
   return transcriptStorage;
 }
 
+function getModelContextSettings() {
+  const stored = store.get(MODEL_CONTEXT_KEY);
+  if (stored && typeof stored === 'object') {
+    return stored;
+  }
+  return {
+    globalGuidelines:
+      'Summarise the lecture in clear sections: recap previous material, key concepts, demonstrations, and next steps. Highlight equations or definitions explicitly and list action items.',
+    includeActionItems: true,
+    emphasiseKeyTerms: true,
+    classContexts: {},
+  };
+}
+
 function ensureAiPipeline() {
   if (aiPipeline) return;
   aiPipeline = new AIPipeline({
     summaryWindowMs: Number(process.env.AI_SUMMARY_WINDOW_MS || 60_000),
-    minSummarizeEveryMs: Number(process.env.AI_MIN_SUMMARIZE_EVERY_MS || 12_000),
+    minSummarizeEveryMs: Number(process.env.AI_MIN_SUMMARIZE_EVERY_MS || 45_000),
   });
 
   aiPipeline.setProviderConfig({
@@ -139,7 +345,10 @@ function ensureAiPipeline() {
     title: process.env.OPENROUTER_TITLE || 'Classroom Assistant',
   });
 
-  aiPipeline.on('update', (payload) => sendToAll('ai:update', payload));
+  aiPipeline.on('update', (payload) => {
+    sendToAll('ai:update', payload);
+    persistAiAnalysis(payload);
+  });
   aiPipeline.on('log',    (payload) => { console.log('[AI PIPELINE][log]', payload); sendToAll('ai:log', payload); });
   aiPipeline.on('error',  (e) => sendToAll('ai:error', { message: String(e?.message ?? e) }));
 
@@ -147,6 +356,7 @@ function ensureAiPipeline() {
   aiPipeline.worker.on('message', (msg) => {
     if (msg?.type === 'segment:save') {
       const { segment, embedding } = msg.payload;
+      ensureTranscriptStorage();
       if (transcriptStorage && segment) {
         try {
           const embeddingArray = embedding ? new Float32Array(embedding) : null;
@@ -161,6 +371,7 @@ function ensureAiPipeline() {
     if (msg?.type === 'disk-search:request') {
       const { requestId, sessionId, queryEmbedding, limit, excludeIds } = msg.payload;
       try {
+        ensureTranscriptStorage();
         const qVec = new Float32Array(queryEmbedding);
         const results = transcriptStorage.searchSimilar(sessionId, qVec, limit, excludeIds);
         aiPipeline.worker.postMessage({
@@ -175,7 +386,88 @@ function ensureAiPipeline() {
         });
       }
     }
+
+    if (msg?.type === 'context:save') {
+      const { requestId, classId, sourceId, segments, error } = msg.payload || {};
+      const pending = pendingContextIngest.get(requestId);
+      if (!pending) return;
+      pendingContextIngest.delete(requestId);
+      clearTimeout(pending.timeout);
+
+      ensureTranscriptStorage();
+      if (error) {
+        console.error('[ClassContext] Failed to embed context segments:', error);
+        try {
+          transcriptStorage.deleteClassContextSource(sourceId);
+        } catch (err) {
+          console.warn('[ClassContext] Cleanup after failure failed:', err);
+        }
+        pending.reject(new Error(error));
+        return;
+      }
+
+      try {
+        const prepared = (segments || []).map((seg) => ({
+          id: seg.id,
+          orderIndex: seg.orderIndex ?? 0,
+          text: seg.text,
+          metadata: seg.metadata || null,
+          embedding: Array.isArray(seg.embedding) ? new Float32Array(seg.embedding) : null,
+        }));
+        transcriptStorage.saveClassContextSegments(sourceId, classId, prepared);
+        pending.resolve({ segmentsSaved: prepared.length });
+      } catch (err) {
+        console.error('[ClassContext] Failed to persist context segments:', err);
+        try {
+          transcriptStorage.deleteClassContextSource(sourceId);
+        } catch (cleanupErr) {
+          console.warn('[ClassContext] Cleanup after persist failure failed:', cleanupErr);
+        }
+        pending.reject(err);
+      }
+      return;
+    }
+
+    if (msg?.type === 'class-context:primer:request') {
+      const { requestId, classId, limit } = msg.payload || {};
+      ensureTranscriptStorage();
+      let segments = [];
+      if (classId) {
+        try {
+          segments = transcriptStorage.getClassContextPrimer(classId, limit ?? 5);
+        } catch (error) {
+          console.error('[ClassContext] Primer fetch failed:', error);
+        }
+      }
+      aiPipeline.worker.postMessage({
+        type: 'class-context:primer:result',
+        payload: { requestId, classId, segments }
+      });
+      return;
+    }
+
+    if (msg?.type === 'class-context:search:request') {
+      const { requestId, classId, queryEmbedding, limit, excludeIds } = msg.payload || {};
+      ensureTranscriptStorage();
+      let results = [];
+      if (classId && Array.isArray(queryEmbedding)) {
+        try {
+          const qVec = new Float32Array(queryEmbedding);
+          results = transcriptStorage.searchSimilarClass(classId, qVec, limit ?? 6, excludeIds ?? []);
+        } catch (error) {
+          console.error('[ClassContext] Search failed:', error);
+          results = [];
+        }
+      }
+      aiPipeline.worker.postMessage({
+        type: 'class-context:search:result',
+        payload: { requestId, results }
+      });
+      return;
+    }
   });
+
+  aiPipeline.setModelContext(getModelContextSettings());
 }
 
 function setupDeepgramEventHandlers() {
@@ -269,7 +561,7 @@ function setupIpcHandlers() {
   });
 
   // Transcription lifecycle
-  ipcMain.handle('start-transcription', async () => {
+  ipcMain.handle('start-transcription', async (_event, metadata = {}) => {
     try {
       const apiKey = process.env.DEEPGRAM_API_KEY;
       if (!apiKey) return { success: false, error: 'Deepgram API key not found. Add DEEPGRAM_API_KEY to .env' };
@@ -279,11 +571,26 @@ function setupIpcHandlers() {
       ensureAiPipeline();
 
       // NEW: Create session
+      const existingClassId = currentSessionMeta?.classId ?? null;
+      const existingRecordId = currentSessionMeta?.recordId ?? null;
+      const classId = typeof metadata?.classId === 'string' ? metadata.classId : existingClassId;
+      const recordId = typeof metadata?.recordId === 'string' ? metadata.recordId : existingRecordId;
+
       currentSessionId = 'session_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
+      currentSessionMeta = {
+        classId: classId ?? null,
+        recordId: recordId ?? null,
+      };
       transcriptStorage.createSession(currentSessionId);
 
       // NEW: Notify AI worker of session start
-      aiPipeline.worker.postMessage({ type: 'session:start', payload: { sessionId: currentSessionId } });
+      aiPipeline.worker.postMessage({
+        type: 'session:start',
+        payload: {
+          sessionId: currentSessionId,
+          classId: currentSessionMeta.classId,
+        },
+      });
 
       await deepgramService.connect();
       console.log('[MAIN] Transcription started with session:', currentSessionId);
@@ -311,6 +618,7 @@ function setupIpcHandlers() {
 
         const returnSessionId = currentSessionId;
         currentSessionId = null;
+        currentSessionMeta = { classId: null, recordId: null };
         return { success: true, message: 'Transcription stopped', sessionId: returnSessionId, stats: sessionStats };
       }
 
@@ -352,11 +660,61 @@ function setupIpcHandlers() {
     catch (e) { return { success: false, error: String(e?.message ?? e) }; }
   });
 
+  ipcMain.handle('ai:doc-analyse', async (_evt, payload = {}) => {
+    try {
+      const provider = ensureDocAnalysisProvider();
+      if (!provider?.summarize) {
+        throw new Error('OpenAI provider unavailable for document analysis');
+      }
+      if (docAnalysisBusy) {
+        return { success: false, busy: true, error: 'Document analysis currently running' };
+      }
+      docAnalysisBusy = true;
+      try {
+        const mode = typeof payload.type === 'string' ? payload.type : 'summary';
+        const instructions = typeof payload.instructions === 'string' ? payload.instructions : '';
+
+        if (mode === 'vision') {
+          const dataUrl = typeof payload.dataUrl === 'string' ? payload.dataUrl : '';
+          const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
+          if (!dataUrl) throw new Error('Image data missing');
+          const requestText = `${instructions ? `${instructions}\n\n` : ''}${prompt}\n\nImage data (base64): ${dataUrl}`;
+          const content = await provider.summarize(requestText, {});
+          return { success: true, content };
+        }
+
+        const rawText = typeof payload.text === 'string' ? payload.text : '';
+        if (!rawText.trim()) throw new Error('No text provided for analysis');
+        const truncated = rawText.length > 48000 ? `${rawText.slice(0, 48000)}…` : rawText;
+        const context = {
+          instructions,
+          fileName: payload.fileName,
+        };
+        const content = await provider.summarize(truncated, context);
+        return { success: true, content };
+      } finally {
+        docAnalysisBusy = false;
+      }
+    } catch (error) {
+      return { success: false, error: String(error?.message ?? error) };
+    }
+  });
+
   ipcMain.handle('ai:selftest', async () => {
     if (!aiPipeline) return { success: false, error: 'aiPipeline not ready' };
     const segs = [
-      { id: 't1', text: 'Gradient descent updates parameters to minimize loss.', startMs: 0, endMs: 3000 },
-      { id: 't2', text: 'L2 regularization reduces overfitting by penalizing large weights.', startMs: 3000, endMs: 6000 },
+      {
+        id: 't1',
+        text: 'The lecturer outlined the team project timeline and highlighted safety checks needed before lab work.',
+        startMs: 0,
+        endMs: 3000,
+      },
+      {
+        id: 't2',
+        text: 'We reviewed the reference sheet from the uploaded briefing and clarified expectations for the midterm summary.',
+        startMs: 3000,
+        endMs: 6000,
+      },
     ];
     let gotUpdate = false, gotError = null;
     const onU = () => { gotUpdate = true; };
@@ -446,6 +804,229 @@ function setupIpcHandlers() {
       return { success: false, error: String(e?.message ?? e) };
     }
   });
+
+  // Classes + transcription records (SQLite-backed)
+  ipcMain.handle('storage:classes:list', () => {
+    try {
+      ensureTranscriptStorage();
+      const classes = transcriptStorage.listClasses();
+      return { success: true, classes };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:classes:save', (_evt, payload) => {
+    try {
+      if (!payload?.id || !payload?.name) {
+        return { success: false, error: 'Class id and name are required' };
+      }
+      ensureTranscriptStorage();
+      const saved = transcriptStorage.upsertClass(payload);
+      return { success: true, class: saved };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:classes:delete', (_evt, classId) => {
+    try {
+      if (!classId) return { success: false, error: 'classId is required' };
+      ensureTranscriptStorage();
+      transcriptStorage.deleteClass(classId);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:classes:archive', (_evt, { classId, archived = true }) => {
+    try {
+      if (!classId) return { success: false, error: 'classId is required' };
+      ensureTranscriptStorage();
+      const updated = transcriptStorage.archiveClass(classId, archived);
+      return { success: true, class: updated };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:transcriptions:list', (_evt, opts = {}) => {
+    try {
+      ensureTranscriptStorage();
+      const records = transcriptStorage.listTranscriptionRecords({
+        classId: opts.classId ?? null,
+        limit: opts.limit ?? 100,
+      });
+      return { success: true, records };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:transcriptions:save', (_evt, payload) => {
+    try {
+      if (!payload?.id || !payload?.title) {
+        return { success: false, error: 'Transcription id and title are required' };
+      }
+      ensureTranscriptStorage();
+      const saved = transcriptStorage.upsertTranscriptionRecord(payload);
+      return { success: true, record: saved };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:transcriptions:get', (_evt, id) => {
+    try {
+      if (!id) return { success: false, error: 'id is required' };
+      ensureTranscriptStorage();
+      const record = transcriptStorage.getTranscriptionRecord(id);
+      if (!record) return { success: false, error: 'Not found' };
+      if (record.sessionId && !record.content) {
+        try {
+          const transcript = transcriptStorage.getFullTranscript(record.sessionId, true);
+          record.content = transcript;
+          record.fullText = transcript;
+        } catch (error) {
+          console.warn('[TranscriptStorage] Failed to hydrate full transcript for', id, error);
+        }
+      }
+      return { success: true, record };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:transcriptions:delete', (_evt, id) => {
+    try {
+      if (!id) return { success: false, error: 'id is required' };
+      ensureTranscriptStorage();
+      transcriptStorage.deleteTranscriptionRecord(id);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('model-context:get', () => {
+    try {
+      return { success: true, settings: getModelContextSettings() };
+    } catch (error) {
+      return { success: false, error: String(error?.message ?? error) };
+    }
+  });
+
+  ipcMain.handle('model-context:save', (_evt, settings) => {
+    try {
+      if (!settings || typeof settings !== 'object') {
+        throw new Error('Invalid settings payload');
+      }
+      store.set(MODEL_CONTEXT_KEY, settings);
+      ensureAiPipeline();
+      aiPipeline?.setModelContext(getModelContextSettings());
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: String(error?.message ?? error) };
+    }
+  });
+
+  ipcMain.handle('class-context:ingest', async (_evt, payload) => {
+    try {
+      ensureTranscriptStorage();
+      ensureAiPipeline();
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('Invalid payload');
+      }
+      const { classId, fileName, text, metadata } = payload;
+      if (!classId) throw new Error('classId is required');
+      if (!fileName) throw new Error('fileName is required');
+
+      const normalized = normalizeContextText(text);
+      if (!normalized) throw new Error('No text extracted from document');
+
+      const fileHash = hashText(normalized);
+      const existing = transcriptStorage.getClassContextSourceByHash(classId, fileHash);
+      if (existing) {
+        return { success: true, duplicate: true, sourceId: existing.id, segments: 0 };
+      }
+
+      const chunks = chunkClassContextText(normalized, {
+        maxChars: 900,
+        minChars: 280,
+        overlapSentences: 2,
+      });
+
+      if (!chunks.length) {
+        throw new Error('Document did not yield any usable context chunks');
+      }
+      if (chunks.length > 2000) {
+        throw new Error('Document is too large to ingest (exceeds 2000 chunks)');
+      }
+
+      const sourceId = generateContextSourceId();
+      transcriptStorage.createClassContextSource({
+        id: sourceId,
+        classId,
+        fileName,
+        fileHash,
+        metadata: {
+          size: normalized.length,
+          chunkCount: chunks.length,
+          ...metadata,
+        },
+      });
+
+      const segments = chunks.map((textChunk, index) => ({
+        id: `${sourceId}_${index}`,
+        orderIndex: index,
+        text: textChunk,
+        metadata: { source: fileName },
+      }));
+
+      const requestId = `ctxreq_${Math.random().toString(36).slice(2)}`;
+
+      const ingestionResult = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          pendingContextIngest.delete(requestId);
+          try {
+            transcriptStorage.deleteClassContextSource(sourceId);
+          } catch (cleanupErr) {
+            console.warn('[ClassContext] Cleanup after timeout failed:', cleanupErr);
+          }
+          reject(new Error('Timed out while processing document context'));
+        }, 45_000);
+
+        pendingContextIngest.set(requestId, {
+          resolve,
+          reject,
+          timeout,
+          classId,
+          sourceId,
+        });
+
+        aiPipeline.worker.postMessage({
+          type: 'context:add',
+          payload: {
+            requestId,
+            classId,
+            sourceId,
+            segments,
+          },
+        });
+      });
+
+      return {
+        success: true,
+        sourceId,
+        segments: ingestionResult.segmentsSaved,
+      };
+    } catch (error) {
+      console.error('[ClassContext] Ingest handler failed:', error);
+      return { success: false, error: String(error?.message ?? error) };
+    }
+  });
+
 }
 
 // ---------- app lifecycle

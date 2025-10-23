@@ -134,6 +134,13 @@ body {
   transform: scale(0.95);
 }
 
+.control-btn.disabled,
+.control-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .close-btn:hover {
   background: rgba(255, 59, 48, 0.8);
   color: white;

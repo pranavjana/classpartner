@@ -133,7 +133,7 @@ export default function TranscriptionsPage() {
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="space-y-1">
                           <h2 className="text-lg font-semibold">
-                            <Link href={`/transcriptions/${tx.id}`} className="hover:underline">
+                            <Link href={`/transcriptions/view?id=${tx.id}`} className="hover:underline">
                               {tx.title}
                             </Link>
                           </h2>
@@ -153,8 +153,32 @@ export default function TranscriptionsPage() {
                         </Badge>
                       </div>
 
-                      <div className="mt-3 text-sm text-muted-foreground">
-                        {tx.summary ? tx.summary : "No summary yet — open to add highlights."}
+                      <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                        <p>{tx.summary ? tx.summary : "No summary yet — open to add highlights."}</p>
+
+                        {tx.keyPoints?.length ? (
+                          <div className="space-y-1">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground/80">Key points</p>
+                            <ul className="ml-3 list-disc space-y-1 text-xs">
+                              {tx.keyPoints.slice(0, 3).map((point, index) => (
+                                <li key={`${tx.id}-kp-${index}`}>{point}</li>
+                              ))}
+                              {tx.keyPoints.length > 3 ? <li>…</li> : null}
+                            </ul>
+                          </div>
+                        ) : null}
+
+                        {tx.actionItems?.length ? (
+                          <div className="space-y-1">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground/80">Action items</p>
+                            <ul className="ml-3 list-disc space-y-1 text-xs">
+                              {tx.actionItems.slice(0, 3).map((item, index) => (
+                                <li key={`${tx.id}-ai-${index}`}>{item}</li>
+                              ))}
+                              {tx.actionItems.length > 3 ? <li>…</li> : null}
+                            </ul>
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -173,7 +197,7 @@ export default function TranscriptionsPage() {
                           Updated {formatDistanceToNow(txDate, { addSuffix: true })}
                         </span>
                         <Button asChild variant="link" size="sm" className="ml-auto px-0">
-                          <Link href={`/transcriptions/${tx.id}`}>Open transcript</Link>
+                          <Link href={`/transcriptions/view?id=${tx.id}`}>Open transcript</Link>
                         </Button>
                       </div>
                     </article>

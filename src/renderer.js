@@ -53,6 +53,8 @@ function initializeWindowControls() {
   // NEW: Download button
   const downloadBtn = document.getElementById('download-btn');
   if (downloadBtn) {
+    downloadBtn.classList.toggle('disabled', !currentSessionId);
+    downloadBtn.disabled = !currentSessionId;
     downloadBtn.addEventListener('click', async () => {
       await downloadTranscript();
     });
@@ -341,6 +343,12 @@ async function startRecording() {
     currentSessionId = result.sessionId;
     console.log('[RENDERER] Session started:', currentSessionId);
 
+    const downloadBtn = document.getElementById('download-btn');
+    if (downloadBtn) {
+      downloadBtn.classList.remove('disabled');
+      downloadBtn.disabled = false;
+    }
+
     // Start audio recording
     const audioStarted = await audioService.startRecording();
     if (!audioStarted) {
@@ -383,10 +391,10 @@ async function stopRecording() {
       showNotification(`Session saved: ${result.stats?.segmentCount || 0} segments`);
     }
 
-    // Show download button
     const downloadBtn = document.getElementById('download-btn');
     if (downloadBtn && currentSessionId) {
-      downloadBtn.classList.remove('hidden');
+      downloadBtn.classList.remove('disabled');
+      downloadBtn.disabled = false;
     }
 
   } catch (error) {

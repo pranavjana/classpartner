@@ -48,6 +48,10 @@ class AIPipeline extends EventEmitter {
     this.worker.postMessage({ type: 'provider:set', payload: cfg });
   }
 
+  setModelContext(ctx) {
+    this.worker.postMessage({ type: 'model-context:set', payload: ctx });
+  }
+
   dispose() {
     this.worker.terminate();
   }

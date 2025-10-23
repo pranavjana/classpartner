@@ -20,6 +20,13 @@ export type CalendarEvent = {
 
 export type TranscriptionRecordStatus = "completed" | "in-progress" | "draft";
 
+export type TranscriptSegment = {
+  id: string;
+  text: string;
+  startMs?: number | null;
+  endMs?: number | null;
+};
+
 export type TranscriptionRecord = {
   id: string;
   title: string;
@@ -31,6 +38,10 @@ export type TranscriptionRecord = {
   summary?: string;
   tags?: string[];
   flagged?: boolean;
+  content?: string;
+  keyPoints?: string[];
+  actionItems?: string[];
+  segments?: TranscriptSegment[];
   fullText?: string; // NEW: Full transcript text
   sessionId?: string; // NEW: Link to SQLite session
 };
@@ -39,12 +50,17 @@ type DashboardDataContextValue = {
   ready: boolean;
   events: CalendarEvent[];
   transcriptions: TranscriptionRecord[];
+  activeRecordId: string | null;
   addEvent: (event: Omit<CalendarEvent, "id"> & { id?: string }) => string;
   updateEvent: (id: string, patch: Partial<CalendarEvent>) => void;
   deleteEvent: (id: string) => void;
   addTranscription: (record: Omit<TranscriptionRecord, "id"> & { id?: string }) => string;
-  updateTranscription: (id: string, patch: Partial<TranscriptionRecord>) => void;
+  updateTranscription: (
+    id: string,
+    patch: Partial<TranscriptionRecord> | ((prev: TranscriptionRecord) => TranscriptionRecord)
+  ) => void;
   deleteTranscription: (id: string) => void;
+  setActiveRecordId: (id: string | null) => void;
   upcomingEvents: (limit?: number) => CalendarEvent[];
   eventsOn: (day: Date) => CalendarEvent[];
   eventsBetween: (start: Date, end: Date) => CalendarEvent[];
@@ -54,6 +70,7 @@ type DashboardDataContextValue = {
 
 const DASHBOARD_EVENTS_KEY = "cp_dashboard_events";
 const DASHBOARD_TRANSCRIPTS_KEY = "cp_dashboard_transcriptions";
+const DASHBOARD_ACTIVE_TRANSCRIPT_KEY = "cp_active_transcription";
 
 const DashboardDataContext = React.createContext<DashboardDataContextValue | null>(null);
 
@@ -66,36 +83,164 @@ function withId(id?: string) {
 }
 
 export function DashboardDataProvider({ children }: { children: React.ReactNode }) {
+  const bridge = typeof window !== "undefined" ? window.transcriptStorage : undefined;
+  const useBridge = Boolean(bridge);
+
   const [ready, setReady] = React.useState(false);
   const [events, setEvents] = React.useState<CalendarEvent[]>(() => createSeedEvents());
   const [transcriptions, setTranscriptions] = React.useState<TranscriptionRecord[]>(() =>
-    createSeedTranscriptions()
+    useBridge ? [] : createSeedTranscriptions()
   );
-
-  // Hydrate from localStorage
-  React.useEffect(() => {
+  const [activeRecordId, setActiveRecordIdState] = React.useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
     try {
-      const storedEvents = localStorage.getItem(DASHBOARD_EVENTS_KEY);
-      const storedTranscriptions = localStorage.getItem(DASHBOARD_TRANSCRIPTS_KEY);
-      if (storedEvents) setEvents(JSON.parse(storedEvents));
-      if (storedTranscriptions) setTranscriptions(JSON.parse(storedTranscriptions));
-    } catch (error) {
-      console.warn("Failed to hydrate dashboard data", error);
-    } finally {
-      setReady(true);
+      return window.localStorage.getItem(DASHBOARD_ACTIVE_TRANSCRIPT_KEY) ?? null;
+    } catch {
+      return null;
     }
+  });
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const hydrate = async () => {
+      let storedEvents: CalendarEvent[] | null = null;
+      let storedTranscriptions: TranscriptionRecord[] | null = null;
+      let storedActive: string | null = null;
+
+      if (typeof window !== "undefined") {
+        try {
+          const rawEvents = localStorage.getItem(DASHBOARD_EVENTS_KEY);
+          if (rawEvents) storedEvents = JSON.parse(rawEvents);
+        } catch {}
+
+        try {
+          const rawTranscriptions = localStorage.getItem(DASHBOARD_TRANSCRIPTS_KEY);
+          if (rawTranscriptions) storedTranscriptions = JSON.parse(rawTranscriptions);
+        } catch {}
+
+        try {
+          storedActive = localStorage.getItem(DASHBOARD_ACTIVE_TRANSCRIPT_KEY);
+        } catch {}
+      }
+
+      if (storedEvents) setEvents(storedEvents);
+      if (storedActive) setActiveRecordIdState(storedActive);
+
+      if (useBridge && bridge) {
+        try {
+          if (storedTranscriptions?.length) {
+            await Promise.all(
+              storedTranscriptions.map((record) =>
+                bridge
+                  .saveTranscription(transcriptionRecordToBridgePayload(record))
+                  .catch((error) => console.error("[DashboardDataProvider] Failed to migrate transcription", error))
+              )
+            );
+            localStorage.removeItem(DASHBOARD_TRANSCRIPTS_KEY);
+          }
+
+          const response = await bridge.listTranscriptions({ limit: 500 });
+          let items: TranscriptionRecord[] =
+            response?.success && Array.isArray(response.records)
+              ? response.records.map((record) => mapBridgeTranscriptionRecord(record))
+              : [];
+
+          if (items.length === 0 && !storedTranscriptions?.length) {
+            const seedRecords = createSeedTranscriptions();
+            await Promise.all(
+              seedRecords.map((record) =>
+                bridge
+                  .saveTranscription(transcriptionRecordToBridgePayload(record))
+                  .catch((error) => console.error("[DashboardDataProvider] Failed to seed transcription", error))
+              )
+            );
+            const seeded = await bridge.listTranscriptions({ limit: 500 });
+            if (seeded?.success && Array.isArray(seeded.records)) {
+              items = seeded.records.map((record) => mapBridgeTranscriptionRecord(record));
+            }
+          }
+
+          if (!cancelled) {
+            setTranscriptions(items);
+          }
+        } catch (error) {
+          console.error("[DashboardDataProvider] Failed to load transcriptions from SQLite:", error);
+          if (!cancelled) {
+            setTranscriptions(storedTranscriptions ?? createSeedTranscriptions());
+          }
+        }
+      } else {
+        if (!cancelled) {
+          setTranscriptions(storedTranscriptions ?? createSeedTranscriptions());
+        }
+      }
+
+      if (!cancelled) {
+        setReady(true);
+      }
+    };
+
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge, useBridge]);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const eventsBridge = (window as unknown as {
+      transcriptionEvents?: {
+        onUpdate?: (
+          callback: (payload: {
+            id: string;
+            summary?: string | null;
+            keyPoints?: string[] | null;
+            actionItems?: string[] | null;
+          }) => void
+        ) => (() => void) | void;
+      };
+    }).transcriptionEvents;
+
+    if (!eventsBridge?.onUpdate) return;
+
+    const unsubscribe = eventsBridge.onUpdate((payload) => {
+      if (!payload?.id) return;
+      setTranscriptions((prev) =>
+        prev.map((record) =>
+          record.id === payload.id
+            ? {
+                ...record,
+                summary: payload.summary ?? record.summary,
+                keyPoints: payload.keyPoints ?? record.keyPoints,
+                actionItems: payload.actionItems ?? record.actionItems,
+              }
+            : record
+        )
+      );
+    });
+
+    return () => {
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
   }, []);
 
-  // Persist whenever collections change
   React.useEffect(() => {
     if (!ready) return;
     try {
       localStorage.setItem(DASHBOARD_EVENTS_KEY, JSON.stringify(events));
-      localStorage.setItem(DASHBOARD_TRANSCRIPTS_KEY, JSON.stringify(transcriptions));
+      if (!useBridge) {
+        localStorage.setItem(DASHBOARD_TRANSCRIPTS_KEY, JSON.stringify(transcriptions));
+      }
+      if (activeRecordId) {
+        localStorage.setItem(DASHBOARD_ACTIVE_TRANSCRIPT_KEY, activeRecordId);
+      } else {
+        localStorage.removeItem(DASHBOARD_ACTIVE_TRANSCRIPT_KEY);
+      }
     } catch (error) {
       console.warn("Failed to persist dashboard data", error);
     }
-  }, [events, transcriptions, ready]);
+  }, [events, transcriptions, activeRecordId, ready, useBridge]);
 
   const addEvent = React.useCallback(
     (payload: Omit<CalendarEvent, "id"> & { id?: string }) => {
@@ -117,18 +262,102 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
   const addTranscription = React.useCallback(
     (payload: Omit<TranscriptionRecord, "id"> & { id?: string }) => {
       const id = withId(payload.id);
-      setTranscriptions((prev) => [{ ...payload, id }, ...prev]);
+      const createdAt = payload.createdAt ?? new Date().toISOString();
+      const record: TranscriptionRecord = {
+        id,
+        title: payload.title,
+        createdAt,
+        durationMinutes: payload.durationMinutes ?? 0,
+        wordCount: payload.wordCount ?? 0,
+        status: payload.status ?? "draft",
+        classId: payload.classId,
+        summary: payload.summary,
+        tags: payload.tags,
+        flagged: payload.flagged,
+        content: payload.content,
+        keyPoints: payload.keyPoints,
+        actionItems: payload.actionItems,
+        segments: payload.segments,
+        fullText: payload.fullText,
+        sessionId: payload.sessionId,
+      };
+
+      setTranscriptions((prev) => [record, ...prev.filter((tx) => tx.id !== id)]);
+
+      if (useBridge && bridge) {
+        bridge
+          .saveTranscription(transcriptionRecordToBridgePayload(record))
+          .then((res) => {
+            if (res?.success && res.record) {
+              const mapped = mapBridgeTranscriptionRecord(res.record);
+              setTranscriptions((prev) =>
+                prev.map((tx) => (tx.id === mapped.id ? { ...mapped, segments: tx.segments } : tx))
+              );
+            }
+          })
+          .catch((error) => console.error("[DashboardDataProvider] Failed to save transcription", error));
+      }
+
       return id;
     },
-    []
+    [bridge, useBridge]
   );
 
-  const updateTranscription = React.useCallback((id: string, patch: Partial<TranscriptionRecord>) => {
-    setTranscriptions((prev) => prev.map((tx) => (tx.id === id ? { ...tx, ...patch } : tx)));
-  }, []);
+  const updateTranscription = React.useCallback(
+    (
+      id: string,
+      patch: Partial<TranscriptionRecord> | ((prev: TranscriptionRecord) => TranscriptionRecord)
+    ) => {
+      let nextRecord: TranscriptionRecord | null = null;
+      setTranscriptions((prev) =>
+        prev.map((tx) => {
+          if (tx.id !== id) return tx;
+          const updated = typeof patch === "function" ? patch(tx) : { ...tx, ...patch };
+          nextRecord = { ...updated };
+          return updated;
+        })
+      );
 
-  const deleteTranscription = React.useCallback((id: string) => {
-    setTranscriptions((prev) => prev.filter((tx) => tx.id !== id));
+      if (useBridge && bridge && nextRecord) {
+        bridge
+          .saveTranscription(transcriptionRecordToBridgePayload(nextRecord))
+          .then((res) => {
+            if (res?.success && res.record) {
+              const mapped = mapBridgeTranscriptionRecord(res.record);
+              setTranscriptions((prev) =>
+                prev.map((tx) =>
+                  tx.id === mapped.id
+                    ? {
+                        ...mapped,
+                        segments: tx.segments ?? nextRecord?.segments,
+                        fullText: tx.fullText ?? nextRecord?.fullText,
+                      }
+                    : tx
+                )
+              );
+            }
+          })
+          .catch((error) => console.error("[DashboardDataProvider] Failed to update transcription", error));
+      }
+    },
+    [bridge, useBridge]
+  );
+
+  const deleteTranscription = React.useCallback(
+    (id: string) => {
+      setTranscriptions((prev) => prev.filter((tx) => tx.id !== id));
+      setActiveRecordIdState((prev) => (prev === id ? null : prev));
+      if (useBridge && bridge) {
+        bridge
+          .deleteTranscription(id)
+          .catch((error) => console.error("[DashboardDataProvider] Failed to delete transcription", error));
+      }
+    },
+    [bridge, useBridge]
+  );
+
+  const setActiveRecordId = React.useCallback((id: string | null) => {
+    setActiveRecordIdState(id);
   }, []);
 
   const upcomingEvents = React.useCallback(
@@ -189,12 +418,14 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
       ready,
       events,
       transcriptions,
+      activeRecordId,
       addEvent,
       updateEvent,
       deleteEvent,
       addTranscription,
       updateTranscription,
       deleteTranscription,
+      setActiveRecordId,
       upcomingEvents,
       eventsOn,
       eventsBetween,
@@ -209,8 +440,10 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
       events,
       eventsBetween,
       eventsOn,
+      activeRecordId,
       ready,
       recentTranscriptions,
+      setActiveRecordId,
       transcriptions,
       transcriptionsForClass,
       upcomingEvents,
@@ -226,6 +459,83 @@ export function useDashboardData() {
   const ctx = React.useContext(DashboardDataContext);
   if (!ctx) throw new Error("useDashboardData must be used within a DashboardDataProvider");
   return ctx;
+}
+
+function transcriptionRecordToBridgePayload(record: TranscriptionRecord) {
+  const createdAtMs = (() => {
+    const parsed = Date.parse(record.createdAt);
+    return Number.isNaN(parsed) ? Date.now() : parsed;
+  })();
+
+  return {
+    id: record.id,
+    title: record.title,
+    classId: record.classId ?? null,
+    sessionId: record.sessionId ?? null,
+    createdAt: createdAtMs,
+    durationMinutes: record.durationMinutes ?? 0,
+    wordCount: record.wordCount ?? 0,
+    status: record.status,
+    summary: record.summary ?? null,
+    keyPoints: record.keyPoints ?? null,
+    actionItems: record.actionItems ?? null,
+    content: record.content ?? record.fullText ?? null,
+    tags: record.tags ?? null,
+    flagged: record.flagged ? 1 : 0,
+  };
+}
+
+function mapBridgeTranscriptionRecord(raw: Record<string, unknown>): TranscriptionRecord {
+  const createdAtIso = (() => {
+    if (typeof raw.createdAt === "string") {
+      return raw.createdAt;
+    }
+    if (typeof raw.createdAt === "number") {
+      return new Date(raw.createdAt).toISOString();
+    }
+    return new Date().toISOString();
+  })();
+
+  const parseArray = (value: unknown): string[] | undefined => {
+    if (!value) return undefined;
+    if (Array.isArray(value)) return value.map((entry) => String(entry));
+    if (typeof value === "string") {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) {
+          return parsed.map((entry) => String(entry));
+        }
+      } catch {}
+    }
+    return undefined;
+  };
+
+  return {
+    id: String(raw.id ?? ""),
+    title: typeof raw.title === "string" ? raw.title : "Untitled transcription",
+    createdAt: createdAtIso,
+    durationMinutes:
+      typeof raw.durationMinutes === "number"
+        ? raw.durationMinutes
+        : Number(raw.durationMinutes ?? 0),
+    wordCount:
+      typeof raw.wordCount === "number" ? raw.wordCount : Number(raw.wordCount ?? 0),
+    status: (typeof raw.status === "string" ? raw.status : "draft") as TranscriptionRecordStatus,
+    classId: typeof raw.classId === "string" ? raw.classId : undefined,
+    summary: typeof raw.summary === "string" ? raw.summary : undefined,
+    tags: parseArray(raw.tags),
+    flagged: Boolean(raw.flagged),
+    content: typeof raw.content === "string" ? raw.content : typeof raw.fullText === "string" ? raw.fullText : undefined,
+    keyPoints: parseArray(raw.keyPoints),
+    actionItems: parseArray(raw.actionItems),
+    sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
+    fullText:
+      typeof raw.content === "string"
+        ? raw.content
+        : typeof raw.fullText === "string"
+        ? raw.fullText
+        : undefined,
+  };
 }
 
 export type { DashboardDataContextValue };

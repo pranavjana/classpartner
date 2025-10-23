@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Mic, NotebookPen, Shield } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { Mic, NotebookPen, Shield, StickyNote, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -14,14 +15,27 @@ import { useTranscriptionLauncher } from "@/lib/transcription/use-launcher";
 import { useDashboardData } from "@/lib/dashboard/provider";
 import { useClasses } from "@/lib/classes/provider";
 
+type QuickNote = {
+  id: string;
+  title: string;
+  content: string;
+  createdAt: string;
+};
+
+const QUICK_NOTES_KEY = "cp_manual_quick_notes";
+
 export default function NewTranscriptionPage() {
-  const { launch, launching } = useTranscriptionLauncher();
+  const { launch, launching, dialog } = useTranscriptionLauncher();
   const { addTranscription } = useDashboardData();
   const { classes } = useClasses();
   const [manualTitle, setManualTitle] = React.useState("");
   const [manualClassId, setManualClassId] = React.useState<string | undefined>();
   const [manualNotes, setManualNotes] = React.useState("");
   const [savedDraft, setSavedDraft] = React.useState(false);
+  const [quickNotes, setQuickNotes] = React.useState<QuickNote[]>([]);
+  const [noteTitle, setNoteTitle] = React.useState("");
+  const [noteBody, setNoteBody] = React.useState("");
+  const [noteSaved, setNoteSaved] = React.useState(false);
 
   const handleManualCapture = React.useCallback(() => {
     const title = manualTitle.trim();
@@ -46,8 +60,63 @@ export default function NewTranscriptionPage() {
     setTimeout(() => setSavedDraft(false), 2500);
   }, [addTranscription, manualClassId, manualNotes, manualTitle]);
 
+  React.useEffect(() => {
+    try {
+      const stored = localStorage.getItem(QUICK_NOTES_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as QuickNote[];
+        setQuickNotes(parsed);
+      }
+    } catch (error) {
+      console.warn("Failed to hydrate manual quick notes", error);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(QUICK_NOTES_KEY, JSON.stringify(quickNotes));
+    } catch (error) {
+      console.warn("Failed to persist manual quick notes", error);
+    }
+  }, [quickNotes]);
+
+  const handleCreateQuickNote = React.useCallback(() => {
+    const title = noteTitle.trim();
+    const content = noteBody.trim();
+    if (!title && !content) return;
+
+    const note: QuickNote = {
+      id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `note-${Date.now()}`,
+      title: title || "Untitled note",
+      content,
+      createdAt: new Date().toISOString(),
+    };
+
+    setQuickNotes((prev) => [note, ...prev].slice(0, 12));
+    setNoteTitle("");
+    setNoteBody("");
+    setNoteSaved(true);
+    setTimeout(() => setNoteSaved(false), 2200);
+  }, [noteBody, noteTitle]);
+
+  const handleDeleteQuickNote = React.useCallback((id: string) => {
+    setQuickNotes((prev) => prev.filter((note) => note.id !== id));
+  }, []);
+
+  const handleUseQuickNote = React.useCallback(
+    (note: QuickNote) => {
+      setManualNotes((prev) => {
+        const base = prev.trim();
+        if (!base) return note.content;
+        return `${base}\n\n${note.content}`;
+      });
+    },
+    []
+  );
+
   return (
     <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
+      {dialog}
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Start a transcription</h1>
         <p className="text-sm text-muted-foreground">
@@ -104,14 +173,14 @@ export default function NewTranscriptionPage() {
             <div className="grid gap-2">
               <Label htmlFor="manual-class">Class (optional)</Label>
               <Select
-                value={manualClassId ?? ""}
-                onValueChange={(value) => setManualClassId(value || undefined)}
+                value={manualClassId ?? "__unassigned"}
+                onValueChange={(value) => setManualClassId(value === "__unassigned" ? undefined : value)}
               >
                 <SelectTrigger id="manual-class">
                   <SelectValue placeholder="Unassigned" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Unassigned</SelectItem>
+                  <SelectItem value="__unassigned">Unassigned</SelectItem>
                   {classes.map((cls) => (
                     <SelectItem key={cls.id} value={cls.id}>
                       {cls.code} — {cls.name}
@@ -144,6 +213,88 @@ export default function NewTranscriptionPage() {
             {savedDraft ? (
               <p className="text-xs text-emerald-600">Saved! Find it under Recents to polish later.</p>
             ) : null}
+
+            <Separator />
+
+            <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <StickyNote className="h-3.5 w-3.5 text-primary" />
+                  Quick scratchpad
+                </h3>
+                {noteSaved ? <span className="text-[11px] text-emerald-600">Note saved</span> : null}
+              </div>
+
+              <div className="grid gap-2">
+                <Input
+                  value={noteTitle}
+                  onChange={(event) => setNoteTitle(event.target.value)}
+                  placeholder="Title"
+                />
+                <Textarea
+                  value={noteBody}
+                  onChange={(event) => setNoteBody(event.target.value)}
+                  placeholder="Jot down reminders or action items…"
+                  rows={4}
+                />
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>{noteBody.length} characters</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleCreateQuickNote}
+                    disabled={!noteTitle.trim() && !noteBody.trim()}
+                  >
+                    Save scratch note
+                  </Button>
+                </div>
+              </div>
+
+              <Separator />
+
+              {quickNotes.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No scratch notes yet. Capture a thought and save it here.</p>
+              ) : (
+                <div className="space-y-3">
+                  {quickNotes.map((note) => (
+                    <article key={note.id} className="rounded-md border border-border/60 bg-background/80 p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-medium text-foreground">{note.title}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Saved {formatDistanceToNow(new Date(note.createdAt), { addSuffix: true })}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="text-xs text-destructive hover:text-destructive"
+                          onClick={() => handleDeleteQuickNote(note.id)}
+                        >
+                          <Trash2 className="mr-1 h-3.5 w-3.5" />
+                          Delete
+                        </Button>
+                      </div>
+                      {note.content ? (
+                        <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{note.content}</p>
+                      ) : null}
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          className="text-xs"
+                          onClick={() => handleUseQuickNote(note)}
+                        >
+                          Send to highlights
+                        </Button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <Separator />
 

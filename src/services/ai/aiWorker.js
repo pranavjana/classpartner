@@ -2,6 +2,9 @@
 const { parentPort, workerData } = require('node:worker_threads');
 const { createProvider } = require('./providers/providerFactory');
 
+const DEFAULT_GLOBAL_GUIDELINES =
+  'Summarise the lecture in clear sections: recap previous material, key concepts, demonstrations, and next steps. Highlight equations or definitions explicitly and list action items.';
+
 // Ensure fetch in worker (Electron on older Node)
 if (typeof fetch === 'undefined') {
   globalThis.fetch = require('node-fetch'); // npm i node-fetch@2
@@ -13,10 +16,12 @@ const state = {
   segments: [],                 // { id, text, startMs, endMs }
   vectors: [],                  // Float32Array[] aligned to segments
   normCache: [],                // number[] norms for cosine
+  contextSegments: [],          // seeded reference notes for this session
   embedDisabledUntil: 0,        // backoff for embeddings
 
   // session tracking
-  currentSessionId: null,       // Track current recording session
+  currentSessionId: null,
+  currentClassId: null,
 
   // summarization cadence
   lastSummaryAt: 0,
@@ -29,7 +34,18 @@ const state = {
   llmBackup: null,              // OpenRouter fallback
   llmDisabledUntil: 0,          // backoff for primary LLM
   llmLastThrottleLogAt: 0,
+
+  modelContext: {
+    globalGuidelines: DEFAULT_GLOBAL_GUIDELINES,
+    includeActionItems: true,
+    emphasiseKeyTerms: true,
+    classContexts: {},
+  },
 };
+
+const pendingPrimerRequests = new Map();
+const pendingClassSearchRequests = new Map();
+const GLOBAL_CONTEXT_CLASS_ID = '__global__';
 
 /* -------------------- HELPERS -------------------- */
 function post(type, payload) { parentPort.postMessage({ type, payload }); }
@@ -48,9 +64,100 @@ function fmtTs(ms) {
 
 function getRollingText() {
   const cutoff = now() - state.summaryWindowMs;
-  const recent = state.segments.filter(s => (s.endMs ?? 0) >= cutoff);
-  const chosen = recent.length ? recent : state.segments.slice(-6); // fallback to last ~6
-  return chosen.map(s => s.text).join(' ').trim();
+  const recent = state.segments.filter((s) => !s.__context && (s.endMs ?? 0) >= cutoff);
+  const fallback = state.segments.filter((s) => !s.__context).slice(-6); // fallback to last ~6
+  const chosen = recent.length ? recent : fallback;
+  return chosen.map((s) => s.text).join(' ').trim();
+}
+
+function buildPromptContext() {
+  const ctx = state.modelContext || {};
+  const classGuidelinesRaw = state.currentClassId ? ctx.classContexts?.[state.currentClassId] : undefined;
+  return {
+    globalGuidelines: typeof ctx.globalGuidelines === 'string' ? ctx.globalGuidelines.trim() : '',
+    classGuidelines: typeof classGuidelinesRaw === 'string' ? classGuidelinesRaw.trim() : '',
+    includeActionItems: ctx.includeActionItems !== false,
+    emphasiseKeyTerms: ctx.emphasiseKeyTerms !== false,
+  };
+}
+
+function resetSessionBuffers() {
+  state.segments = [];
+  state.vectors = [];
+  state.normCache = [];
+  state.contextSegments = [];
+  state.lastSummaryAt = 0;
+}
+
+function buildContextPrimer(maxChars = 1200) {
+  if (!state.contextSegments.length) return '';
+  const combined = state.contextSegments.map((seg) => seg.text).join('\n\n');
+  return combined.slice(0, maxChars);
+}
+
+function randomRequestId(prefix) {
+  return `${prefix}_${Math.random().toString(36).slice(2)}`;
+}
+
+function requestClassContextPrimer(classId, limit = 5) {
+  if (!classId) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {
+    const requestId = randomRequestId('primer');
+    const timeout = setTimeout(() => {
+      pendingPrimerRequests.delete(requestId);
+      reject(new Error('Primer request timed out'));
+    }, 5000);
+
+    pendingPrimerRequests.set(requestId, { resolve, reject, timeout });
+    post('class-context:primer:request', { requestId, classId, limit });
+  });
+}
+
+function requestClassContextSearch(classId, queryEmbedding, limit = 10, excludeIds = []) {
+  if (!classId) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {
+    const requestId = randomRequestId('kb');
+    const timeout = setTimeout(() => {
+      pendingClassSearchRequests.delete(requestId);
+      reject(new Error('Class context search timed out'));
+    }, 5000);
+
+    pendingClassSearchRequests.set(requestId, { resolve, reject, timeout });
+    post('class-context:search:request', {
+      requestId,
+      classId,
+      queryEmbedding: Array.from(queryEmbedding),
+      limit,
+      excludeIds,
+    });
+  });
+}
+
+async function loadClassContextPrimer(classId) {
+  if (!classId) return;
+  try {
+    const primerSegments = await requestClassContextPrimer(classId, 5);
+    primerSegments
+      .filter((seg) => seg?.text)
+      .forEach((seg) => {
+        const text = typeof seg.text === 'string' ? seg.text.trim() : '';
+        if (!text) return;
+        const id = seg.id || randomRequestId('ctx');
+        if (state.contextSegments.some((existing) => existing.id === id)) return;
+        const contextSeg = {
+          id,
+          text,
+          __context: true,
+          sourceId: seg.sourceId || null,
+          classId: seg.classId || classId,
+          startMs: -1,
+          endMs: -1,
+        };
+        state.contextSegments.push(contextSeg);
+      });
+  } catch (error) {
+    console.warn('[ClassContext] Failed to load primer:', error.message);
+  }
 }
 
 /* -------------------- EMBEDDING -------------------- */
@@ -130,19 +237,32 @@ async function maybeSummarize() {
   const t = Date.now();
   if (t - state.lastSummaryAt < state.minSummarizeEveryMs) return;
 
-  const text = getRollingText();
+  const lectureText = getRollingText();
+  const primer = buildContextPrimer();
+  const text = primer ? `${primer}\n\n${lectureText}`.trim() : lectureText;
   if (!text) return;
+  if (!primer && text.length < 80) return;
 
   // throttle window starts even if downstream fails
   state.lastSummaryAt = t;
 
   try {
+    const promptContext = buildPromptContext();
+    const includeActions = promptContext.includeActionItems !== false;
+    const emphasiseTerms = promptContext.emphasiseKeyTerms !== false;
+
     const [summary, actions, keywords] = await Promise.all([
-      llmCall('summarize', text),
-      llmCall('extractActions', text),
-      llmCall('keywords', text),
+      llmCall('summarize', text, promptContext),
+      includeActions ? llmCall('extractActions', text, promptContext) : Promise.resolve([]),
+      emphasiseTerms ? llmCall('keywords', text, promptContext) : Promise.resolve([]),
     ]);
-    post('ai:update', { summary, actions, keywords, ts: t });
+    post('ai:update', {
+      summary,
+      actions,
+      keywords,
+      promptContext,
+      ts: t,
+    });
   } catch (e) {
     post('ai:error', { where: 'maybeSummarize', message: String(e?.message ?? e) });
   }
@@ -152,7 +272,8 @@ async function maybeSummarize() {
 /* -------------------- FAST QUERY (with disk fallback) -------------------- */
 async function answerQueryFast(query, opts = {}) {
   const k = opts.k || 6;
-  const searchFullHistory = opts.searchFullHistory || false;
+  const searchFullHistory =
+    typeof opts.searchFullHistory === 'boolean' ? opts.searchFullHistory : true;
 
   // Try semantic retrieval if we have embed; else keyword fallback
   let qv = null, nq = 0;
@@ -200,37 +321,104 @@ async function answerQueryFast(query, opts = {}) {
     }
   }
 
+  let kbHits = [];
+  if (qv) {
+    const searchTargets = new Set();
+    if (state.currentClassId) searchTargets.add(state.currentClassId);
+    searchTargets.add(GLOBAL_CONTEXT_CLASS_ID);
+    const memoryIds = state.segments.map((s) => s.id);
+
+    for (const classId of searchTargets) {
+      try {
+        const kbResults = await requestClassContextSearch(classId, qv, Math.max(k, 8), memoryIds);
+        kbResults.forEach((r) => {
+          kbHits.push([
+            r.score,
+            { ...r.segment, __context: true, classId },
+            classId === GLOBAL_CONTEXT_CLASS_ID ? 'global' : 'class',
+          ]);
+        });
+      } catch (e) {
+        post('ai:log', { message: `Class context search failed (${classId}): ${e.message}` });
+      }
+    }
+  }
+
   // 3. Merge and rank results
-  const allHits = [...memoryHits, ...diskHits];
+  const allHits = [...memoryHits, ...diskHits, ...kbHits];
   allHits.sort((a, b) => b[0] - a[0]);
   const topHits = allHits.slice(0, k);
 
   // 4. Format context
-  const ctx = topHits.map(([score, item, source]) => {
-    const seg = source === 'memory' ? state.segments[item] : item;
-    return `• [${fmtTs(seg.startMs)}-${fmtTs(seg.endMs)}] ${seg.text}`;
-  }).filter(Boolean).join('\n');
+  const includedIds = new Set();
+  const ctxLines = topHits
+    .map(([score, item, source]) => {
+      const seg = source === 'memory' ? state.segments[item] : item;
+      if (!seg || !seg.text) return null;
+      includedIds.add(seg.id);
+      const sourceLabel =
+        seg.__context
+          ? seg.classId === GLOBAL_CONTEXT_CLASS_ID
+            ? '[Global Context]'
+            : '[Class Context]'
+          : `[${fmtTs(seg.startMs)}-${fmtTs(seg.endMs)}]`;
+      const origin = seg.metadata?.source ? ` (${seg.metadata.source})` : '';
+      return `• ${sourceLabel} ${seg.text}${origin}`;
+    })
+    .filter(Boolean);
+
+  const extraContextSnippets = [];
+  const queryLower = query.toLowerCase();
+  for (const seg of state.contextSegments) {
+    if (!seg?.text) continue;
+    if (includedIds.has(seg.id)) continue;
+    const sourceLabel = seg.classId === GLOBAL_CONTEXT_CLASS_ID ? '[Global Context]' : '[Class Context]';
+    const origin = seg.metadata?.source ? ` (${seg.metadata.source})` : '';
+    if (qv && nq) {
+      extraContextSnippets.push(`• ${sourceLabel} ${seg.text}${origin}`);
+      includedIds.add(seg.id);
+    } else if (queryLower && seg.text.toLowerCase().includes(queryLower)) {
+      extraContextSnippets.push(`• ${sourceLabel} ${seg.text}${origin}`);
+      includedIds.add(seg.id);
+    }
+    if (extraContextSnippets.length >= Math.max(3, Math.ceil(k / 2))) break;
+  }
+
+  if (!extraContextSnippets.length && state.contextSegments.length) {
+    const primer = state.contextSegments.slice(0, Math.min(3, state.contextSegments.length));
+    primer.forEach((seg) => {
+      if (!seg?.text) return;
+      if (includedIds.has(seg.id)) return;
+      const sourceLabel = seg.classId === GLOBAL_CONTEXT_CLASS_ID ? '[Global Context]' : '[Class Context]';
+      const origin = seg.metadata?.source ? ` (${seg.metadata.source})` : '';
+      extraContextSnippets.push(`• ${sourceLabel} ${seg.text}${origin}`);
+      includedIds.add(seg.id);
+    });
+  }
+
+  const combinedSnippets = [...ctxLines, ...extraContextSnippets].filter(Boolean).join('\n');
 
   const cached = {
     rollingSummary: getRollingText().slice(-800),
     searchedFullHistory: searchFullHistory,
     memoryHits: memoryHits.length,
-    diskHits: diskHits.length
+    diskHits: diskHits.length,
+    classHits: kbHits.length,
   };
 
-  if (opts.mode === 'snippets') return { mode: 'snippets', snippets: ctx, cached };
+  if (opts.mode === 'snippets') return { mode: 'snippets', snippets: combinedSnippets, cached };
 
   try {
     const prompt = `You are an assistant answering based on class snippets.
 Query: ${query}
 Snippets:
-${ctx}
+${combinedSnippets}
 
 Answer succinctly. If insufficient context, say so.`;
-    const answer = await llmCall('summarize', prompt); // cheap single-pass
-    return { mode: 'qa', answer, snippets: ctx, cached };
+    const answer = await llmCall('summarize', prompt, buildPromptContext()); // cheap single-pass
+    return { mode: 'qa', answer, snippets: combinedSnippets, cached };
   } catch (e) {
-    return { mode: 'snippets', snippets: ctx, cached, error: String(e?.message ?? e) };
+    return { mode: 'snippets', snippets: combinedSnippets, cached, error: String(e?.message ?? e) };
   }
 }
 
@@ -342,16 +530,110 @@ parentPort.on('message', async (msg) => {
 
     if (msg?.type === 'debug:forceBackup') { state.llmDisabledUntil = Date.now() + 5*60*1000; post('ai:log',{message:'Primary LLM forced into cooldown'}); return; }
 
+    if (msg?.type === 'context:add') {
+      const { requestId, classId, sourceId, segments } = msg.payload || {};
+      try {
+        if (!segments || !segments.length) {
+          throw new Error('No segments provided for context ingestion');
+        }
+        const texts = segments.map((seg) => seg.text || '');
+        let vectors = [];
+        if (state.provider?.embed) {
+          try {
+            vectors = await state.provider.embed(texts);
+          } catch (embedError) {
+            console.warn('[ClassContext] Embedding provider failed, storing without embeddings:', embedError);
+            vectors = [];
+          }
+        }
+        const prepared = segments.map((seg, idx) => {
+          const vector = vectors?.[idx];
+          return {
+            id: seg.id,
+            orderIndex: seg.orderIndex ?? idx,
+            text: seg.text,
+            metadata: seg.metadata || null,
+            embedding: vector ? Array.from(vector) : null,
+          };
+        });
+        post('context:save', { requestId, classId, sourceId, segments: prepared });
+      } catch (error) {
+        post('context:save', {
+          requestId,
+          classId,
+          sourceId,
+          error: String(error?.message ?? error),
+        });
+      }
+      return;
+    }
+
+
+    if (msg?.type === 'model-context:set') {
+      const incoming = msg.payload || {};
+      state.modelContext = {
+        globalGuidelines:
+          typeof incoming.globalGuidelines === 'string'
+            ? incoming.globalGuidelines
+            : state.modelContext.globalGuidelines,
+        includeActionItems:
+          typeof incoming.includeActionItems === 'boolean'
+            ? incoming.includeActionItems
+            : state.modelContext.includeActionItems,
+        emphasiseKeyTerms:
+          typeof incoming.emphasiseKeyTerms === 'boolean'
+            ? incoming.emphasiseKeyTerms
+            : state.modelContext.emphasiseKeyTerms,
+        classContexts:
+          incoming.classContexts && typeof incoming.classContexts === 'object'
+            ? incoming.classContexts
+            : state.modelContext.classContexts,
+      };
+      post('ai:log', { message: 'Model context updated' });
+      return;
+    }
+
+    if (msg?.type === 'class-context:primer:result') {
+      const { requestId, segments } = msg.payload || {};
+      const pending = pendingPrimerRequests.get(requestId);
+      if (pending) {
+        pendingPrimerRequests.delete(requestId);
+        clearTimeout(pending.timeout);
+        pending.resolve(segments || []);
+      }
+      return;
+    }
+
+    if (msg?.type === 'class-context:search:result') {
+      const { requestId, results } = msg.payload || {};
+      const pending = pendingClassSearchRequests.get(requestId);
+      if (pending) {
+        pendingClassSearchRequests.delete(requestId);
+        clearTimeout(pending.timeout);
+        pending.resolve(results || []);
+      }
+      return;
+    }
 
     if (msg?.type === 'session:start') {
+      resetSessionBuffers();
       state.currentSessionId = msg.payload.sessionId;
-      post('ai:log', { message: `Session started: ${state.currentSessionId}` });
+      state.currentClassId = msg.payload.classId || null;
+      await loadClassContextPrimer(GLOBAL_CONTEXT_CLASS_ID);
+      if (state.currentClassId) {
+        await loadClassContextPrimer(state.currentClassId);
+      }
+      post('ai:log', {
+        message: `Session started: ${state.currentSessionId}; contextChunks=${state.contextSegments.length}`,
+      });
       return;
     }
 
     if (msg?.type === 'session:end') {
       post('ai:log', { message: `Session ended: ${state.currentSessionId}` });
+      resetSessionBuffers();
       state.currentSessionId = null;
+      state.currentClassId = null;
       return;
     }
 
@@ -365,11 +647,14 @@ parentPort.on('message', async (msg) => {
 
         // Store segment in memory
         state.segments.push(seg);
-        if (state.segments.length > 2000) {
-          const drop = state.segments.length - 2000;
-          state.segments.splice(0, drop);
-          state.vectors.splice(0, drop);
-          state.normCache.splice(0, drop);
+        const contextCount = state.contextSegments.length;
+        const maxLectureSegments = 2000;
+        const lectureCount = state.segments.length - contextCount;
+        if (lectureCount > maxLectureSegments) {
+          const drop = lectureCount - maxLectureSegments;
+          state.segments.splice(contextCount, drop);
+          state.vectors.splice(contextCount, drop);
+          state.normCache.splice(contextCount, drop);
         }
 
         // Background: embed & maybe summarize
