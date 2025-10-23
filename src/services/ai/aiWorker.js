@@ -685,6 +685,6 @@ parentPort.on('message', async (msg) => {
       return;
     }
   } catch (e) {
-    post('ai:error', { where: 'onmessage', message: String(e?.message ?? e) });
+    post('ai:error', { where: 'onmessage', messages: String(e?.message ?? e) });
   }
 });
