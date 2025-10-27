@@ -49,6 +49,7 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
   const { addTranscription, updateTranscription, activeRecordId, setActiveRecordId } = useDashboardData();
 
   const [launching, setLaunching] = React.useState(false);
+  const launchingRef = React.useRef(false);
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [selectedClassId, setSelectedClassId] = React.useState<string>(UNASSIGNED_VALUE);
   const [sessionTitle, setSessionTitle] = React.useState("");
@@ -85,6 +86,7 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
 
   const startWithContext = React.useCallback(
     async (classIdInput: string | undefined, titleInput?: string) => {
+      if (launchingRef.current) return;
       const normalizedClassId = classIdInput === UNASSIGNED_VALUE ? undefined : classIdInput;
       const context = buildContext(normalizedClassId, titleInput);
 
@@ -103,6 +105,7 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
         return;
       }
 
+      launchingRef.current = true;
       setLaunching(true);
       let recordId: string | undefined;
       try {
@@ -157,6 +160,7 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
 
         alert("Please run the desktop app to start a transcription.");
       } finally {
+        launchingRef.current = false;
         setLaunching(false);
       }
     },
@@ -177,7 +181,7 @@ export function useTranscriptionLauncher(options: LaunchOptions = {}) {
   }, []);
 
   const launch = React.useCallback(() => {
-    if (launching) return;
+    if (launchingRef.current || launching) return;
     const initialClassId = defaultClassId ?? lastClassId ?? classes[0]?.id ?? UNASSIGNED_VALUE;
     setSelectedClassId(initialClassId);
     const initialTitle = defaultClassId ? defaultTitle?.trim() ?? "" : "";

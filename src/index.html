@@ -2,162 +2,270 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-    <title>Classroom Assistant</title>
+    <title>ClassPartner Overlay</title>
     <link rel="stylesheet" href="index.css" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline';"
+    />
   </head>
   <body>
-    <div class="overlay-container">
-      <!-- Header bar with drag handle and controls -->
-      <div class="header-bar" id="header-bar">
-        <div class="drag-handle">
-          <div class="drag-icon">≡</div>
-          <span class="app-title">Classroom Assistant</span>
+    <div class="overlay-root">
+      <header class="overlay-header" id="header-bar">
+        <div class="header-drag">
+          <div class="brand-mark" aria-hidden="true"></div>
+          <span class="brand-name">ClassPartner</span>
         </div>
-        <div class="header-controls">
-          <!-- Recording button -->
-          <button class="control-btn record-btn" id="record-btn" title="Start Recording">
-            <div class="record-icon" id="record-icon"></div>
-            <span class="record-text" id="record-text">Start</span>
+        <div class="window-buttons" role="group" aria-label="Window controls">
+          <button id="minimize-btn" class="window-btn" aria-label="Minimize">
+            <span aria-hidden="true"></span>
           </button>
+          <button id="maximize-btn" class="window-btn" data-state="restored" aria-label="Toggle maximize">
+            <span class="maximize-icon" aria-hidden="true"></span>
+          </button>
+          <button id="close-btn" class="window-btn window-btn-destructive" aria-label="Close">
+            <span aria-hidden="true"></span>
+          </button>
+        </div>
+      </header>
 
-          <!-- Download button -->
-          <button class="control-btn download-btn" id="download-btn" title="Download Transcript">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M7 1V9M7 9L4 6M7 9L10 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-              <path d="M1 11H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <section class="control-strip">
+        <div class="control-group">
+          <button class="record-toggle" id="record-btn">
+            <div class="record-indicator" id="record-icon"></div>
+            <span id="record-text">Start</span>
+          </button>
+          <button class="icon-btn" id="download-btn" title="Download transcript">
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
+              <path d="M1 11h12" />
             </svg>
           </button>
+          <button class="icon-btn" id="qa-toggle-btn" title="Toggle Q&A panel (Ctrl + 4)">
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
+            </svg>
+          </button>
+          <button class="icon-btn" id="settings-btn" title="Overlay settings">
+            <svg viewBox="0 0 12 12" aria-hidden="true">
+              <path
+                d="M6 7.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm4.5-1.5c0 .3-.03.59-.08.87l1.12.76c.09.06.12.17.06.27l-1 1.7c-.06.1-.17.13-.27.09l-1.29-.54a3.2 3.2 0 0 1-.78.47l-.19 1.4c-.01.11-.11.19-.22.19h-2c-.11 0-.21-.08-.22-.19l-.19-1.4a3.2 3.2 0 0 1-.78-.47l-1.29.54c-.1.04-.21.01-.27-.09l-1-1.7a.2.2 0 0 1 .06-.27l1.12-.76A4 4 0 0 1 3.2 6c0-.3.03-.59.08-.87l-1.12-.76a.2.2 0 0 1-.06-.27l1-1.7c.06-.1.17-.13.27-.09l1.29.54c.25-.2.51-.36.78-.47l.19-1.4c.01-.11.11-.19.22-.19h2c.11 0 .21.08.22.19l.19 1.4c.27.11.53.27.78.47l1.29-.54c.1-.04.21-.01.27.09l1 1.7c.06.1.03.21-.06.27l-1.12.76c.05.28.08.57.08.87Z"
+              />
+            </svg>
+          </button>
+        </div>
 
-          <!-- Mic Booster -->
-          <div class="mic-booster" id="mic-booster">
-            <label for="mic-gain-slider" class="mic-label">Mic</label>
-            <input type="range" id="mic-gain-slider" min="1" max="5" step="0.1" value="1" class="gain-slider">
-            <span class="gain-value" id="gain-value">1.0x</span>
-          </div>
+        <div class="control-group control-group-lost">
+          <button class="lost-trigger" id="lost-btn" title="Drop a marker and get a recap (Cmd/Ctrl + L)">
+            <span class="lost-trigger-dot" aria-hidden="true"></span>
+            <span class="lost-trigger-text">I'm lost</span>
+            <kbd class="lost-trigger-shortcut">⌘L</kbd>
+          </button>
+        </div>
 
-          <!-- Connection status -->
+        <div class="control-separator" aria-hidden="true"></div>
+
+        <div class="control-group control-group-mic" id="mic-booster">
+          <label for="mic-gain-slider">Mic</label>
+          <input
+            type="range"
+            id="mic-gain-slider"
+            min="1"
+            max="5"
+            step="0.1"
+            value="1"
+          />
+          <span id="gain-value">1.0x</span>
+        </div>
+
+        <div class="control-group status-group">
           <div class="connection-status" id="connection-status">
-            <div class="status-dot" id="status-dot"></div>
+            <span class="status-dot" id="status-dot" aria-hidden="true"></span>
             <span class="status-text" id="status-text">Disconnected</span>
           </div>
-
-          <!-- Segment counter -->
           <div class="segment-counter hidden" id="segment-counter">
             <span id="segment-count-text">0 segments</span>
           </div>
         </div>
-        
-        <div class="window-controls">
-          <button class="control-btn settings-btn" id="settings-btn" title="Settings">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path d="M6 7.5C6.82843 7.5 7.5 6.82843 7.5 6C7.5 5.17157 6.82843 4.5 6 4.5C5.17157 4.5 4.5 5.17157 4.5 6C4.5 6.82843 5.17157 7.5 6 7.5Z" fill="currentColor"/>
-              <path d="M10.5 6C10.5 6.3 10.47 6.59 10.42 6.87L11.54 7.63C11.63 7.69 11.66 7.8 11.6 7.9L10.6 9.6C10.54 9.7 10.43 9.73 10.33 9.7L9.04 9.16C8.8 9.35 8.54 9.51 8.26 9.63L8.07 11.03C8.06 11.14 7.96 11.22 7.85 11.22H5.85C5.74 11.22 5.64 11.14 5.63 11.03L5.44 9.63C5.16 9.51 4.9 9.35 4.66 9.16L3.37 9.7C3.27 9.73 3.16 9.7 3.1 9.6L2.1 7.9C2.04 7.8 2.07 7.69 2.16 7.63L3.28 6.87C3.23 6.59 3.2 6.3 3.2 6C3.2 5.7 3.23 5.41 3.28 5.13L2.16 4.37C2.07 4.31 2.04 4.2 2.1 4.1L3.1 2.4C3.16 2.3 3.27 2.27 3.37 2.3L4.66 2.84C4.9 2.65 5.16 2.49 5.44 2.37L5.63 0.97C5.64 0.86 5.74 0.78 5.85 0.78H7.85C7.96 0.78 8.06 0.86 8.07 0.97L8.26 2.37C8.54 2.49 8.8 2.65 9.04 2.84L10.33 2.3C10.43 2.27 10.54 2.3 10.6 2.4L11.6 4.1C11.66 4.2 11.63 4.31 11.54 4.37L10.42 5.13C10.47 5.41 10.5 5.7 10.5 6Z" fill="currentColor"/>
-            </svg>
-          </button>
-          <button class="control-btn minimize-btn" id="minimize-btn" title="Minimize">
-            <svg width="10" height="2" viewBox="0 0 10 2" fill="none">
-              <path d="M0 1H10" stroke="currentColor" stroke-width="2"/>
-            </svg>
-          </button>
-          <button class="control-btn close-btn" id="close-btn" title="Close">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-              <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="2"/>
-            </svg>
-          </button>
-        </div>
-      </div>
+      </section>
 
-      <!-- Main content area for transcriptions -->
-      <div class="content-area">
-        <!-- Recording indicator -->
-        <div class="recording-indicator hidden" id="recording-indicator">
-          <div class="pulse-dot"></div>
-          <span>Recording...</span>
-        </div>
-        
-        <!-- Transcript display -->
-        <div class="transcript-display" id="transcript-display">
-          <div class="interim-text" id="interim-text"></div>
-          <div class="final-text" id="final-text">
-            <div class="placeholder-text" id="placeholder-text">
-              Ready for transcription...
-              <br>
-              <small>Press the record button or Ctrl+Shift+T to toggle visibility</small>
+      <main class="overlay-body">
+        <div class="overlay-main-content two-column" id="main-content">
+          <section class="panel transcript-panel collapsible" id="transcript-panel">
+          <header class="panel-header">
+            <div class="panel-title">
+              <span>Live transcript</span>
+              <div class="recording-pill hidden" id="recording-indicator">
+                <span class="pill-dot" aria-hidden="true"></span>
+                <span>Recording</span>
+              </div>
+            </div>
+            <div class="audio-level-container hidden" id="audio-level-container">
+              <div class="audio-level-bar">
+                <div class="audio-level-fill" id="audio-level-fill"></div>
+              </div>
+              <span class="audio-level-text" id="audio-level-text">0%</span>
+            </div>
+            <button class="panel-toggle" id="transcript-toggle" title="Toggle transcript panel">
+              <svg viewBox="0 0 14 14" aria-hidden="true">
+                <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
+              </svg>
+            </button>
+          </header>
+
+          <div class="panel-content">
+            <div class="transcript-container">
+            <div class="transcript-display" id="transcript-display">
+              <div class="interim-text" id="interim-text"></div>
+              <div class="final-text" id="final-text">
+                <div class="placeholder-text" id="placeholder-text">
+                  Ready for transcription.<br />
+                  <small>Press the record button or use Ctrl + Shift + T to toggle the overlay.</small>
+                </div>
+              </div>
+            </div>
+            <div class="transcript-controls">
+              <button class="transcript-control-btn" id="scroll-to-bottom" title="Scroll to bottom">
+                <svg viewBox="0 0 14 14" aria-hidden="true">
+                  <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
+                </svg>
+              </button>
+              <button class="transcript-control-btn" id="clear-transcript" title="Clear transcript">
+                <svg viewBox="0 0 14 14" aria-hidden="true">
+                  <path d="M3 3l8 8M11 3l-8 8" />
+                </svg>
+              </button>
             </div>
           </div>
-        </div>
-        
-        <!-- Audio level indicator -->
-        <div class="audio-level-container hidden" id="audio-level-container">
-          <div class="audio-level-bar">
-            <div class="audio-level-fill" id="audio-level-fill"></div>
-          </div>
-          <span class="audio-level-text" id="audio-level-text">0%</span>
-        </div>
+        </section>
 
-        <!-- AI Summary Panel -->
-        <div class="ai-panel" id="ai-panel">
-          <div class="ai-header">
-            <span class="ai-title">AI Analysis</span>
+        <aside class="panel insights-panel collapsible" id="ai-panel">
+          <header class="panel-header">
+            <div class="panel-title">
+              <span>AI insights</span>
+            </div>
             <div class="ai-status" id="ai-status">
-              <div class="ai-status-dot" id="ai-status-dot"></div>
+              <span class="ai-status-dot" id="ai-status-dot" aria-hidden="true"></span>
               <span id="ai-status-text">Initializing...</span>
             </div>
-          </div>
-          
-          <div class="ai-content" id="ai-content">
-            <div class="ai-section">
-              <h4>Summary</h4>
-              <div class="ai-summary" id="ai-summary">Waiting for conversation...</div>
-            </div>
-            
-            <div class="ai-section">
-              <h4>Action Items</h4>
-              <ul class="ai-actions" id="ai-actions">
-                <li class="placeholder">No action items detected</li>
-              </ul>
-            </div>
-            
-            <div class="ai-section">
-              <h4>Keywords</h4>
-              <div class="ai-keywords" id="ai-keywords">
-                <span class="tag placeholder">No keywords yet</span>
-              </div>
-            </div>
+            <button class="panel-toggle" id="ai-toggle" title="Toggle AI insights panel">
+              <svg viewBox="0 0 14 14" aria-hidden="true">
+                <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
+              </svg>
+            </button>
+          </header>
 
-            <div class="ai-debug" id="ai-debug">
-              <h4>Debug Info</h4>
-              <div class="debug-log" id="debug-log">
-                <div class="debug-entry">AI pipeline initializing...</div>
+          <div class="panel-content">
+            <div class="insights-container">
+              <div class="panel-section">
+                <div class="section-header">
+                  <h3>Summary</h3>
+                </div>
+                <div class="section-body" id="ai-summary">Waiting for conversation...</div>
               </div>
+
+              <div class="panel-section">
+                <div class="section-header">
+                  <h3>Action items</h3>
+                </div>
+                <ul class="section-list" id="ai-actions">
+                  <li class="placeholder">No action items detected</li>
+                </ul>
+              </div>
+
+              <div class="panel-section">
+                <div class="section-header">
+                  <h3>Keywords</h3>
+                </div>
+                <div class="keyword-grid" id="ai-keywords">
+                  <span class="keyword-chip placeholder">No keywords yet</span>
+                </div>
+              </div>
+
+              <div class="panel-section lost-recaps-section">
+                <div class="section-header lost-recaps-header">
+                  <h3>Recap coach</h3>
+                  <span class="lost-status-pill" id="lost-status-pill">Ready</span>
+                </div>
+                <div class="lost-recap-list" id="lost-recap-list">
+                  <div class="lost-empty-state">
+                    Tap “I’m lost” to drop a marker. We’ll recap the last few minutes without pausing transcription.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </aside>
+        </div>
+      </main>
+
+      <!-- Floating Lost Mode Panel -->
+      <section class="panel lost-panel floating-panel" id="lost-panel">
+        <header class="panel-header">
+          <div class="panel-title">
+            <span>I'm lost</span>
+            <span class="lost-status-pill" id="lost-status-pill">Ready</span>
+          </div>
+          <button class="panel-toggle" id="lost-panel-toggle" title="Toggle lost mode panel">
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
+            </svg>
+          </button>
+        </header>
+
+        <div class="lost-content">
+          <div class="lost-timeline" id="lost-timeline" aria-live="polite">
+            <div class="lost-timeline-empty">Lost markers will appear here.</div>
+          </div>
+          <div class="lost-recap-list" id="lost-recap-list">
+            <div class="lost-empty-state">
+              Tap "I'm lost" to drop a marker. We'll recap the last few minutes without pausing transcription.
             </div>
           </div>
         </div>
-      </div>
-      
-      <!-- Resize handles -->
-      <div class="resize-handle bottom" id="resize-bottom"></div>
-      <div class="resize-handle right" id="resize-right"></div>
-      <div class="resize-handle bottom-right" id="resize-bottom-right"></div>
+      </section>
+
+      <!-- Floating Q&A Panel -->
+      <section class="panel qa-panel floating-panel" id="qa-panel">
+        <header class="panel-header">
+          <div class="panel-title">
+            <span>Ask the lecture</span>
+            <span class="qa-hint">Shift + Enter to submit</span>
+          </div>
+          <button class="panel-toggle" id="qa-toggle" title="Toggle Q&A panel">
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
+            </svg>
+          </button>
+        </header>
+        
+        <div class="panel-content">
+          <div class="qa-input-row">
+            <input
+              id="qa-input"
+              class="qa-input"
+              type="text"
+              placeholder="Ask about what was just said..."
+              autocomplete="off"
+            />
+            <button id="qa-btn" class="qa-submit">Ask</button>
+          </div>
+          <div id="qa-results" class="qa-results"></div>
+        </div>
+      </section>
     </div>
 
-    <!-- Context menu -->
     <div class="context-menu" id="context-menu">
-      <div class="context-menu-item" id="toggle-always-on-top">
+      <button class="context-menu-item" id="toggle-always-on-top" type="button">
         <span>Always on Top</span>
         <span class="check-mark" id="always-on-top-check">✓</span>
-      </div>
+      </button>
     </div>
-    
-    <!-- Q&A Box -->
-    <div id="qa-panel" class="qa-panel">
-      <div class="qa-row">
-        <input id="qa-input" class="qa-input" type="text" placeholder="Ask about what was just said…" />
-        <button id="qa-btn" class="qa-btn" title="Ask">Ask</button>
-      </div>
-      <div id="qa-results" class="qa-results"></div>
-    </div>
+
+    <div class="resize-handle resize-handle-bottom" id="resize-bottom" aria-hidden="true"></div>
+    <div class="resize-handle resize-handle-right" id="resize-right" aria-hidden="true"></div>
+    <div class="resize-handle resize-handle-corner" id="resize-bottom-right" aria-hidden="true"></div>
+
     <script src="renderer.js"></script>
   </body>
 </html>

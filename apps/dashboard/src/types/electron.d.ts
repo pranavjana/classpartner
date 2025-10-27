@@ -1,8 +1,9 @@
 type UnknownRecord = Record<string, unknown>;
 
 interface TranscriptionStorageBridge {
-  getCurrentSession: () => Promise<{ sessionId: string | null }>;
+  getCurrentSession: () => Promise<{ sessionId: string | null; classId?: string | null; recordId?: string | null; startedAt?: number | null }>;
   getFullTranscript: (sessionId: string) => Promise<{ success: boolean; transcript?: string; session?: UnknownRecord; error?: string }>;
+  getSegmentWindow: (options: UnknownRecord) => Promise<{ success: boolean; segments?: UnknownRecord[]; session?: UnknownRecord; error?: string }>;
   exportTranscript: (sessionId: string, format: string) => Promise<{ success: boolean; content?: unknown; filename?: string; isBinary?: boolean; error?: string }>;
   getSessions: (limit?: number) => Promise<{ success: boolean; sessions?: UnknownRecord[]; error?: string }>;
   getStats: () => Promise<{ success: boolean; stats?: UnknownRecord; error?: string }>;

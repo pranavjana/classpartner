@@ -38,6 +38,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Window state queries
   isAlwaysOnTop: () => ipcRenderer.invoke('is-always-on-top'),
   getWindowBounds: () => ipcRenderer.invoke('get-window-bounds'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('window-toggle-maximize'),
+  isWindowMaximized: () => ipcRenderer.invoke('window-is-maximized'),
+  onWindowStateChange: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    return on('window:maximize-changed', (_event, state) => callback(state));
+  },
   
   // Transcription features
   startTranscription: (metadata) => ipcRenderer.invoke('start-transcription', metadata),
@@ -66,6 +72,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Settings and configuration
   getSettings: () => ipcRenderer.invoke('get-settings'),
   updateSettings: (settings) => ipcRenderer.invoke('update-settings', settings),
+  onSettingsUpdated: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    return on('settings:updated', (_event, snapshot) => callback(snapshot));
+  },
   
   // Development utilities
   openDevTools: () => ipcRenderer.invoke('open-dev-tools'),
@@ -117,6 +127,7 @@ contextBridge.exposeInMainWorld("ai", {
   availability: () => ipcRenderer.invoke("get-ai-availability"),
   ask: (query, opts) => ipcRenderer.invoke("ai:query", { query, opts }),
   selftest: () => ipcRenderer.invoke("ai:selftest"),
+  lostRecap: (payload) => ipcRenderer.invoke("ai:lost-recap", payload),
 });
 
 /**
@@ -160,6 +171,7 @@ contextBridge.exposeInMainWorld("bus", {
 contextBridge.exposeInMainWorld("transcriptStorage", {
   getCurrentSession: () => ipcRenderer.invoke("transcript:get-current-session"),
   getFullTranscript: (sessionId) => ipcRenderer.invoke("transcript:get-full", sessionId),
+  getSegmentWindow: (options) => ipcRenderer.invoke("transcript:get-window", options),
   exportTranscript: (sessionId, format) => ipcRenderer.invoke("transcript:export", { sessionId, format }),
   getSessions: (limit) => ipcRenderer.invoke("transcript:get-sessions", limit),
   getStats: () => ipcRenderer.invoke("transcript:get-stats"),

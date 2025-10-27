@@ -248,8 +248,19 @@ function openAIProvider(cfg) {
     return parseKeywordsFromContent(content);
   };
 
+  const lostRecap = async ({ systemPrompt, userPrompt, temperature = 0.25, responseFormat }) => {
+    const content = await chat(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      { temperature, response_format: responseFormat }
+    );
+    return content;
+  };
+
   const embed = async () => { throw new Error('Embeddings not provided by OpenAI provider here'); }
-  return { summarize, extractActions, keywords, embed };
+  return { summarize, extractActions, keywords, embed, lostRecap };
 }
 
 /* ---------------- OpenRouter (chat only) ---------------- */
@@ -310,8 +321,19 @@ function openRouterProvider(cfg) {
     return parseKeywordsFromContent(content);
   };
 
+  const lostRecap = async ({ systemPrompt, userPrompt, temperature = 0.25 }) => {
+    const content = await chat(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      { temperature }
+    );
+    return content;
+  };
+
   const embed = async () => { throw new Error('Embeddings not supported via OpenRouter'); }
-  return { summarize, extractActions, keywords, embed };
+  return { summarize, extractActions, keywords, embed, lostRecap };
 }
 
 /* ---------------- Local embeddings (Xenova) ---------------- */
@@ -406,8 +428,18 @@ function geminiProvider(cfg) {
     }
   };
 
+  const lostRecap = async ({ systemPrompt, userPrompt, temperature = 0.25 }) => {
+    const { text: content } = await generateText({
+      model: geminiModel,
+      system: systemPrompt,
+      prompt: userPrompt,
+      temperature,
+    });
+    return content;
+  };
+
   const embed = async () => { throw new Error('Embeddings not provided by Gemini provider here'); };
-  return { summarize, extractActions, keywords, embed };
+  return { summarize, extractActions, keywords, embed, lostRecap };
 }
 
 /* ---------------- Hybrids ---------------- */
@@ -420,6 +452,9 @@ function combine(emb, llm) {
     summarize: llm.summarize,
     extractActions: llm.extractActions,
     keywords: llm.keywords,
+    lostRecap: llm.lostRecap
+      ? (payload) => llm.lostRecap(payload)
+      : async ({ userPrompt } = {}) => llm.summarize(userPrompt || '', {}),
     embed: emb.embed,
   };
 }
@@ -430,6 +465,7 @@ function noopProvider() {
     summarize: async () => '',
     extractActions: async () => [],
     keywords: async () => [],
+    lostRecap: async () => '',
     embed: async (texts) => texts.map(() => null),
   };
 }

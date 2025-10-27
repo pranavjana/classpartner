@@ -4,6 +4,14 @@ export type ClassScheduleEntry = {
   end: string; // HH:MM
 };
 
+export type TranscriptionRecord = {
+  id: string;
+  createdAt: string;
+  durationMinutes?: number;
+  title?: string;
+  // add other fields your code expects
+};
+
 export type ClassMetadata = {
   instructor?: string;
   meetLink?: string;
