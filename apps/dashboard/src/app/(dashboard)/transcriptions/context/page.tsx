@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Brain, Save, RefreshCw, Upload, FileText } from "lucide-react";
+import { Brain, Save, RefreshCw, Upload, FileText, X, Loader2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -19,6 +19,30 @@ type ModelContextSettings = {
   classContexts: Record<string, string>;
 };
 
+type ContextSourceDisplay = {
+  id: string;
+  fileName: string;
+  classId: string;
+  uploadedAt: number; // Normalised epoch (ms) derived from API responses
+  status?: "processing" | "ready" | "error";
+  message?: string | null;
+  duplicate?: boolean;
+  chunkCount?: number;
+  size?: number;
+};
+
+type RawContextSource = {
+  id: string;
+  fileName?: string;
+  uploadedAt?: number | string;
+  metadata?: unknown;
+  status?: "processing" | "ready" | "error";
+  message?: string | null;
+  duplicate?: boolean;
+  chunkCount?: number;
+  size?: number;
+};
+
 const STORAGE_KEY = "cp_model_context_v1";
 
 const DEFAULT_SETTINGS: ModelContextSettings = {
@@ -29,6 +53,8 @@ const DEFAULT_SETTINGS: ModelContextSettings = {
   classContexts: {},
 };
 
+const GLOBAL_CONTEXT_ID = "__global__";
+
 export default function ModelContextPage() {
   const { classes } = useClasses();
   const [settings, setSettings] = React.useState<ModelContextSettings>(DEFAULT_SETTINGS);
@@ -36,9 +62,15 @@ export default function ModelContextPage() {
   const [loading, setLoading] = React.useState(true);
   const [globalUploadStatus, setGlobalUploadStatus] = React.useState<string | null>(null);
   const [classUploadStatus, setClassUploadStatus] = React.useState<Record<string, string | null>>({});
+  const [globalSources, setGlobalSources] = React.useState<ContextSourceDisplay[]>([]);
+  const [classSources, setClassSources] = React.useState<Record<string, ContextSourceDisplay[]>>({});
   const modelContextBridge =
     typeof window !== "undefined"
       ? (window as unknown as { modelContext?: { get?: () => Promise<{ success: boolean; settings?: ModelContextSettings; error?: string }>; save?: (settings: ModelContextSettings) => Promise<{ success: boolean; error?: string }> } }).modelContext
+      : undefined;
+  const desktopApi =
+    typeof window !== "undefined"
+      ? (window as unknown as { api?: { invoke?: (channel: string, payload?: unknown) => Promise<unknown> } }).api
       : undefined;
 
   React.useEffect(() => {
@@ -123,92 +155,284 @@ export default function ModelContextPage() {
     setClassUploadStatus({});
   }, [persist]);
 
-  const GLOBAL_CONTEXT_ID = "__global__";
+  const toDisplaySource = React.useCallback(
+    (classId: string, raw: RawContextSource): ContextSourceDisplay => {
+      let uploadedAt = Date.now();
+      if (typeof raw.uploadedAt === "number") {
+        uploadedAt = raw.uploadedAt;
+      } else if (typeof raw.uploadedAt === "string") {
+        const parsed = Number(raw.uploadedAt);
+        if (!Number.isNaN(parsed)) uploadedAt = parsed;
+      }
+
+      let chunkCount: number | undefined;
+      let size: number | undefined;
+      try {
+        const meta =
+          typeof raw.metadata === "string"
+            ? JSON.parse(raw.metadata)
+            : raw.metadata && typeof raw.metadata === "object"
+            ? raw.metadata
+            : undefined;
+        if (meta && typeof meta === "object") {
+          const metaObj = meta as Record<string, unknown>;
+          if (typeof metaObj.chunkCount === "number") chunkCount = metaObj.chunkCount;
+          if (typeof metaObj.size === "number") size = metaObj.size;
+        }
+      } catch (error) {
+        console.warn("Failed to parse context metadata", error);
+      }
+
+      return {
+        id: raw.id,
+        fileName: raw.fileName ?? "Untitled",
+        classId,
+        uploadedAt,
+        chunkCount: chunkCount ?? raw.chunkCount,
+        size: size ?? raw.size,
+        status: raw.status ?? "ready",
+        message: raw.message ?? (chunkCount ? `${chunkCount} snippets indexed` : "Ready"),
+        duplicate: raw.duplicate,
+      };
+    },
+    []
+  );
+
+  const refreshSources = React.useCallback(async () => {
+    const api = desktopApi;
+    if (!api?.invoke) return;
+    try {
+      const globalResponse = (await api.invoke("class-context:list", {
+        classId: GLOBAL_CONTEXT_ID,
+      })) as {
+        success?: boolean;
+        sources?: Array<RawContextSource>;
+        error?: string;
+      };
+      if (globalResponse?.success && Array.isArray(globalResponse.sources)) {
+        setGlobalSources(globalResponse.sources.map((source) => toDisplaySource(GLOBAL_CONTEXT_ID, source)));
+      }
+
+      if (classes.length) {
+        const entries = await Promise.all(
+          classes.map(async (cls) => {
+            try {
+              if (!api?.invoke) return [cls.id, []] as const;
+              const response = (await api.invoke("class-context:list", {
+                classId: cls.id,
+              })) as {
+                success?: boolean;
+                sources?: Array<RawContextSource>;
+                error?: string;
+              };
+              if (response?.success && Array.isArray(response.sources)) {
+                return [cls.id, response.sources.map((source) => toDisplaySource(cls.id, source))] as const;
+              }
+            } catch (error) {
+              console.warn("Failed to load context sources for class", cls.id, error);
+            }
+            return [cls.id, []] as const;
+          })
+        );
+
+        if (entries.length) {
+          setClassSources(Object.fromEntries(entries));
+        } else {
+          setClassSources({});
+        }
+      } else {
+        setClassSources({});
+      }
+    } catch (error) {
+      console.warn("Failed to refresh context sources", error);
+    }
+  }, [desktopApi, classes, toDisplaySource]);
+
+  React.useEffect(() => {
+    if (!desktopApi?.invoke) return;
+    void refreshSources();
+  }, [desktopApi, refreshSources]);
 
   const handleGlobalFileProcessed = React.useCallback(
     async (info: ProcessedFileInfo) => {
       if (!info?.normalized.trim()) return;
-      if (typeof window === "undefined") return;
-      const api = (window as unknown as { api?: { invoke?: (channel: string, payload?: unknown) => Promise<unknown> } }).api;
-      if (!api?.invoke) return;
+      const api = desktopApi;
+      const supportsBridge = Boolean(api?.invoke);
+      const tempId = `tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const tempEntry: ContextSourceDisplay = {
+        id: tempId,
+        fileName: info.file.name,
+        classId: GLOBAL_CONTEXT_ID,
+        uploadedAt: Date.now(),
+        status: "processing",
+        message: "Indexing...",
+      };
+      setGlobalSources((prev) => [tempEntry, ...prev.filter((item) => item.id !== tempId)]);
+      setGlobalUploadStatus(`Indexing ${info.file.name}...`);
 
       try {
-        setGlobalUploadStatus(`Indexing ${info.file.name} for quick answers…`);
-
+        if (!supportsBridge || !api?.invoke) {
+          throw new Error("Desktop bridge unavailable");
+        }
         const response = (await api.invoke("class-context:ingest", {
           classId: GLOBAL_CONTEXT_ID,
           fileName: info.file.name,
           text: info.normalized,
-        })) as { success?: boolean; duplicate?: boolean; segments?: number; error?: string };
-
-        if (response?.success) {
-          const previewRaw = info.snippet.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 2).join(" ");
-          const preview = previewRaw.length > 280 ? `${previewRaw.slice(0, 280)}…` : previewRaw;
-          const suffix = response.duplicate
-            ? " (already indexed globally)"
-            : response.segments
-            ? ` (${response.segments} snippets indexed globally)`
-            : "";
-          setGlobalUploadStatus(
-            `Ready: ${info.file.name}${suffix}.${preview ? ` Preview: ${preview}` : ""}`
-          );
-        } else {
-          setGlobalUploadStatus(`Failed to index ${info.file.name}: ${response?.error ?? "Unknown error"}`);
+        })) as {
+          success?: boolean;
+          duplicate?: boolean;
+          segments?: number;
+          sourceId?: string;
+          error?: string;
+        };
+        if (!response?.success) {
+          throw new Error(response?.error ?? "Failed to index document");
         }
+
+        setGlobalUploadStatus(
+          response.duplicate
+            ? `${info.file.name} was already indexed globally.`
+            : `Indexed ${info.file.name}.`
+        );
+        await refreshSources();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setGlobalUploadStatus(`Failed to index ${info.file.name}: ${message}`);
+        setGlobalSources((prev) =>
+          prev.map((item) =>
+            item.id === tempId ? { ...item, status: "error", message } : item
+          )
+        );
+      } finally {
+        if (supportsBridge) {
+          setGlobalSources((prev) => prev.filter((item) => item.id !== tempId));
+        }
       }
     },
-    []
+    [desktopApi, refreshSources]
   );
 
   const handleClassFileProcessed = React.useCallback(
     async (classId: string, info: ProcessedFileInfo) => {
       if (!classId || !info?.normalized.trim()) return;
-      if (typeof window === "undefined") return;
-      const api = (window as unknown as { api?: { invoke?: (channel: string, payload?: unknown) => Promise<unknown> } }).api;
-      if (!api?.invoke) return;
-
+      const api = desktopApi;
+      const supportsBridge = Boolean(api?.invoke);
+      const tempId = `tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const tempEntry: ContextSourceDisplay = {
+        id: tempId,
+        fileName: info.file.name,
+        classId,
+        uploadedAt: Date.now(),
+        status: "processing",
+        message: "Indexing...",
+      };
+      setClassSources((prev) => ({
+        ...prev,
+        [classId]: [tempEntry, ...(prev[classId] ?? []).filter((item) => item.id !== tempId)],
+      }));
       try {
         setClassUploadStatus((prev) => ({
           ...prev,
-          [classId]: `Indexing ${info.file.name} for quick answers…`,
+          [classId]: `Indexing ${info.file.name}...`,
         }));
+
+        if (!supportsBridge || !api?.invoke) {
+          throw new Error("Desktop bridge unavailable");
+        }
 
         const response = (await api.invoke("class-context:ingest", {
           classId,
           fileName: info.file.name,
           text: info.normalized,
-        })) as { success?: boolean; duplicate?: boolean; segments?: number; error?: string };
+        })) as { success?: boolean; duplicate?: boolean; segments?: number; sourceId?: string; error?: string };
 
-        if (response?.success) {
-          const previewRaw = info.snippet.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 2).join(" ");
-          const preview = previewRaw.length > 280 ? `${previewRaw.slice(0, 280)}…` : previewRaw;
-          const suffix = response.duplicate
-            ? " (already indexed)"
-            : response.segments
-            ? ` (${response.segments} snippets indexed)`
-            : "";
-          setClassUploadStatus((prev) => ({
-            ...prev,
-            [classId]: `Ready: ${info.file.name}${suffix}.${preview ? ` Preview: ${preview}` : ""}`,
-          }));
-        } else {
-          setClassUploadStatus((prev) => ({
-            ...prev,
-            [classId]: `Failed to index ${info.file.name}: ${response?.error ?? "Unknown error"}`,
-          }));
+        if (!response?.success) {
+          throw new Error(response?.error ?? "Failed to index document");
         }
+
+        setClassUploadStatus((prev) => ({
+          ...prev,
+          [classId]: response.duplicate
+            ? `${info.file.name} was already indexed.`
+            : `Indexed ${info.file.name}.`,
+        }));
+        await refreshSources();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setClassUploadStatus((prev) => ({
           ...prev,
           [classId]: `Failed to index ${info.file.name}: ${message}`,
         }));
+        setClassSources((prev) => ({
+          ...prev,
+          [classId]: (prev[classId] ?? []).map((item) =>
+            item.id === tempId ? { ...item, status: "error", message } : item
+          ),
+        }));
+      } finally {
+        if (supportsBridge) {
+          setClassSources((prev) => ({
+            ...prev,
+            [classId]: (prev[classId] ?? []).filter((item) => item.id !== tempId),
+          }));
+        }
       }
     },
-    []
+    [desktopApi, refreshSources]
+  );
+
+  const handleRemoveSource = React.useCallback(
+    async (classId: string, sourceId: string) => {
+      if (!sourceId) return;
+      const api = desktopApi;
+      const supportsBridge = Boolean(api?.invoke);
+      if (classId === GLOBAL_CONTEXT_ID) {
+        setGlobalSources((prev) =>
+          prev.map((item) =>
+            item.id === sourceId ? { ...item, status: "processing", message: "Removing..." } : item
+          )
+        );
+      } else {
+        setClassSources((prev) => ({
+          ...prev,
+          [classId]: (prev[classId] ?? []).map((item) =>
+            item.id === sourceId ? { ...item, status: "processing", message: "Removing..." } : item
+          ),
+        }));
+      }
+
+      try {
+        if (!supportsBridge || !api?.invoke) {
+          throw new Error("Desktop bridge unavailable");
+        }
+        const response = (await api.invoke("class-context:remove-source", {
+          classId,
+          sourceId,
+        })) as { success?: boolean; error?: string };
+        if (!response?.success) {
+          throw new Error(response?.error ?? "Failed to remove source");
+        }
+        await refreshSources();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (classId === GLOBAL_CONTEXT_ID) {
+          setGlobalSources((prev) =>
+            prev.map((item) =>
+              item.id === sourceId ? { ...item, status: "error", message } : item
+            )
+          );
+        } else {
+          setClassSources((prev) => ({
+            ...prev,
+            [classId]: (prev[classId] ?? []).map((item) =>
+              item.id === sourceId ? { ...item, status: "error", message } : item
+            ),
+          }));
+        }
+        console.error("Failed to remove context source", error);
+      }
+    },
+    [desktopApi, refreshSources]
   );
 
   return (
@@ -273,13 +497,17 @@ export default function ModelContextPage() {
               onStatusChange={setGlobalUploadStatus}
               onFileProcessed={handleGlobalFileProcessed}
             />
+            <ContextFileList
+              items={globalSources}
+              onRemove={(id) => handleRemoveSource(GLOBAL_CONTEXT_ID, id)}
+            />
 
             <Separator />
 
             <div className="flex items-center gap-3">
               <Button onClick={handleSave} disabled={saving || loading}>
                 <Save className="mr-2 h-4 w-4" />
-                {saving ? "Saving…" : loading ? "Loading…" : "Save model context"}
+                {saving ? "Saving..." : loading ? "Loading..." : "Save model context"}
               </Button>
               <Button type="button" variant="ghost" onClick={handleReset} disabled={saving || loading}>
                 <RefreshCw className="mr-2 h-4 w-4" />
@@ -336,6 +564,10 @@ export default function ModelContextPage() {
                           }
                           onFileProcessed={(info) => handleClassFileProcessed(cls.id, info)}
                         />
+                        <ContextFileList
+                          items={classSources[cls.id] ?? []}
+                          onRemove={(id) => handleRemoveSource(cls.id, id)}
+                        />
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
@@ -375,6 +607,104 @@ function ToggleSetting({
   );
 }
 
+function ContextFileList({
+  items,
+  onRemove,
+}: {
+  items: ContextSourceDisplay[];
+  onRemove: (id: string) => void | Promise<void>;
+}) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-2">
+      {items.map((item) => {
+        const isProcessing = item.status === "processing";
+        const isError = item.status === "error";
+        const description = describeContextSource(item);
+        return (
+          <div
+            key={item.id}
+            className={cn(
+              "flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2 transition-colors",
+              isError && "border-destructive/40 bg-destructive/5"
+            )}
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <FileText
+                className={cn(
+                  "h-4 w-4 text-muted-foreground",
+                  isProcessing && "animate-pulse",
+                  isError && "text-destructive"
+                )}
+              />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-foreground">{item.fileName}</p>
+                <p
+                  className={cn(
+                    "text-xs text-muted-foreground",
+                    isProcessing && "text-foreground",
+                    isError && "text-destructive"
+                  )}
+                >
+                  {description}
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground",
+                isError && "text-destructive hover:text-destructive"
+              )}
+              onClick={() => onRemove(item.id)}
+              disabled={isProcessing}
+              title="Remove file"
+            >
+              {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+            </Button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function describeContextSource(item: ContextSourceDisplay): string {
+  if (item.status === "processing") {
+    return item.message ?? "Processing...";
+  }
+  if (item.status === "error") {
+    return item.message ?? "Failed";
+  }
+
+  const parts: string[] = [];
+  if (typeof item.chunkCount === "number" && item.chunkCount > 0) {
+    parts.push(`${item.chunkCount} snippets`);
+  }
+  if (typeof item.size === "number" && item.size > 0) {
+    const kilobytes = Math.max(1, Math.round(item.size / 1024));
+    parts.push(`${kilobytes} KB`);
+  }
+  const timestamp = new Date(item.uploadedAt);
+  if (!Number.isNaN(timestamp.getTime())) {
+    parts.push(
+      timestamp.toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    );
+  }
+
+  if (parts.length === 0 && item.message) {
+    return item.message;
+  }
+  return parts.length ? parts.join(" • ") : "Ready";
+}
+
 type UploadDropZoneProps = {
   label: string;
   status: string | null;
@@ -404,7 +734,7 @@ function UploadDropZone({ label, status, onAppend, onStatusChange, disabled, onF
       for (const file of files) {
         if (disabled) break;
         try {
-          onStatusChange(`Processing ${file.name}…`);
+          onStatusChange(`Processing ${file.name}...`);
           const { snippet, summarised, normalized } = await buildSnippetFromFile(file);
           if (onAppend) {
             onAppend(snippet);
@@ -412,10 +742,7 @@ function UploadDropZone({ label, status, onAppend, onStatusChange, disabled, onF
           if (onFileProcessed) {
             await onFileProcessed({ file, normalized, summarised, snippet });
           }
-          const preview = snippet.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 2).join(" ");
-          onStatusChange(
-            `Indexed ${file.name}${summarised ? " (summary generated)" : ""}.${preview ? ` Preview: ${preview}` : ""}`
-          );
+          onStatusChange(`Indexed ${file.name}${summarised ? " (summary generated)" : ""}.`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           onStatusChange(`Failed to import ${file.name}: ${message}`);
@@ -517,9 +844,9 @@ async function buildSnippetFromFile(file: File): Promise<SnippetResult> {
     if (summary) {
       summarised = true;
       const excerpt = normalized.slice(0, MAX_EXCERPT);
-      body = `Summary:\n${summary.trim()}\n\nReference excerpt:\n${excerpt}${normalized.length > MAX_EXCERPT ? "…" : ""}`;
+      body = `Summary:\n${summary.trim()}\n\nReference excerpt:\n${excerpt}${normalized.length > MAX_EXCERPT ? "..." : ""}`;
     } else {
-      body = `${normalized.slice(0, MAX_EXCERPT)}${normalized.length > MAX_EXCERPT ? "…" : ""}`;
+      body = `${normalized.slice(0, MAX_EXCERPT)}${normalized.length > MAX_EXCERPT ? "..." : ""}`;
     }
   }
 
@@ -573,7 +900,7 @@ async function extractTextFromPdf(file: File): Promise<string> {
     }
   }
   if (pdf.numPages > MAX_PAGES) {
-    text += '\n…';
+    text += '\n...';
   }
   return text;
 }

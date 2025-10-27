@@ -233,6 +233,61 @@ class TranscriptStorage {
     return limit ? stmt.all(sessionId, limit) : stmt.all(sessionId);
   }
 
+  getSegmentsWindow(sessionId, options = {}) {
+    if (!sessionId) return [];
+    const windowMs = typeof options.windowMs === 'number' ? options.windowMs : 8 * 60 * 1000;
+    const cutoffMs = typeof options.cutoffMs === 'number' ? options.cutoffMs : Date.now();
+    const limit = typeof options.limit === 'number' ? options.limit : 400;
+    const includePrereq = typeof options.includePrereq === 'number' ? options.includePrereq : 2;
+
+    const coalesceField = 'COALESCE(startMs, timestamp)';
+    const lowerBound = cutoffMs - Math.max(windowMs, 60_000); // enforce 1 min floor
+
+    const baseQuery = `
+      SELECT *, ${coalesceField} as segmentTime
+      FROM segments
+      WHERE sessionId = ?
+        AND ${coalesceField} <= ?
+        AND ${coalesceField} >= ?
+      ORDER BY segmentTime ASC
+      LIMIT ?
+    `;
+    const rows = this.db.prepare(baseQuery).all(sessionId, cutoffMs, lowerBound, limit);
+
+    if (!rows.length && includePrereq <= 0) {
+      return rows.map((row) => this.mapSegment(row));
+    }
+
+    if (rows.length === 0 && includePrereq > 0) {
+      const prereqQuery = `
+        SELECT *, ${coalesceField} as segmentTime
+        FROM segments
+        WHERE sessionId = ?
+          AND ${coalesceField} <= ?
+        ORDER BY segmentTime DESC
+        LIMIT ?
+      `;
+      const prereqRows = this.db.prepare(prereqQuery).all(sessionId, cutoffMs, includePrereq);
+      return prereqRows.reverse().map((row) => this.mapSegment(row));
+    }
+
+    if (rows.length && includePrereq > 0) {
+      const earliest = rows[0].segmentTime;
+      const prereqQuery = `
+        SELECT *, ${coalesceField} as segmentTime
+        FROM segments
+        WHERE sessionId = ?
+          AND ${coalesceField} < ?
+        ORDER BY segmentTime DESC
+        LIMIT ?
+      `;
+      const prereqRows = this.db.prepare(prereqQuery).all(sessionId, earliest, includePrereq);
+      rows.unshift(...prereqRows.reverse());
+    }
+
+    return rows.map((row) => this.mapSegment(row));
+  }
+
   // Get full transcript as text
   getFullTranscript(sessionId, includeTimestamps = true) {
     const segments = this.getSegmentsBySession(sessionId);
@@ -765,6 +820,26 @@ Words: ${session.wordCount || 0}
       tags: row.tags ? JSON.parse(row.tags) : undefined,
       flagged: Boolean(row.flagged),
       fullText: row.content || undefined,
+    };
+  }
+
+  mapSegment(row) {
+    if (!row) return null;
+    const startMs = typeof row.startMs === 'number' ? row.startMs : null;
+    const endMs = typeof row.endMs === 'number' ? row.endMs : null;
+    const ts = typeof row.timestamp === 'number' ? row.timestamp : null;
+    return {
+      id: row.id,
+      sessionId: row.sessionId,
+      text: row.text,
+      startMs,
+      endMs,
+      timestamp: ts,
+      confidence: row.confidence ?? null,
+      absoluteMs:
+        typeof row.segmentTime === 'number'
+          ? row.segmentTime
+          : startMs ?? ts,
     };
   }
 

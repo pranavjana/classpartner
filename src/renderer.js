@@ -9,9 +9,132 @@ let audioService = null;
 let transcriptLines = [];
 let currentSessionId = null; // NEW: Track current session
 let totalSegmentCount = 0;   // NEW: Total segments in database
+let transcriptDisplayEl = null;
+let shouldAutoScroll = true;
+
+const lostState = {
+  sessionId: null,
+  startedAt: null,
+  classId: null,
+  recordId: null,
+  markers: [],
+  queue: [],
+  processing: false,
+  lastTriggerAt: 0,
+  classes: null,
+};
+
+const LOST_LIMITS = {
+  windowMs: 8 * 60 * 1000,
+  maxWindowMs: 12 * 60 * 1000,
+  minElapsedMs: 90 * 1000,
+  minGapMs: 60 * 1000,
+  includePrereq: 2,
+  maxSegments: 450,
+  maxExcerptChars: 6000,
+  contextSnippetLimit: 4,
+};
+
+let lostButtonEl = null;
+let lostTimelineEl = null;
+let lostRecapListEl = null;
+let lostStatusEl = null;
+
+const appearanceState = {
+  theme: 'system',
+  accentHex: '#6366f1',
+};
+
+function normalizeHex(value) {
+  if (!value || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  const hex = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
+  if (!/^(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) return null;
+  const expanded = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+  return `#${expanded.slice(0, 6)}`.toLowerCase();
+}
+
+function linearize(channel) {
+  return channel <= 0.03928 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+}
+
+function getReadableText(hex) {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const luminance = 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b);
+  return luminance > 0.6 ? '#0f172a' : '#ffffff';
+}
+
+function applyAccentColor(accent) {
+  if (typeof document === 'undefined') return;
+  const normalized = normalizeHex(accent) || appearanceState.accentHex;
+  const foreground = getReadableText(normalized);
+  const root = document.documentElement;
+  const accentVars = {
+    '--primary': normalized,
+    '--primary-foreground': foreground,
+    '--accent': normalized,
+    '--accent-foreground': foreground,
+    '--sidebar-accent': normalized,
+    '--sidebar-accent-foreground': foreground,
+    '--sidebar-primary': normalized,
+    '--sidebar-primary-foreground': foreground,
+  };
+  Object.entries(accentVars).forEach(([key, value]) => root.style.setProperty(key, value));
+  appearanceState.accentHex = normalized;
+}
+
+function applyThemeSetting(theme) {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  if (theme === 'system') {
+    const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+    root.classList.toggle('dark', prefersDark);
+    root.dataset.theme = prefersDark ? 'brand-dark' : 'brand';
+  } else {
+    const isDark = theme === 'dark';
+    root.classList.toggle('dark', isDark);
+    root.dataset.theme = isDark ? 'brand-dark' : 'brand';
+  }
+  appearanceState.theme = theme;
+}
+
+async function initializeAppearance() {
+  if (typeof window === 'undefined') return;
+  try {
+    const settings = await window.electronAPI?.getSettings?.();
+    const general = settings?.generalSettings;
+    if (general) {
+      if (typeof general.theme === 'string') {
+        applyThemeSetting(general.theme);
+      }
+      if (typeof general.accentHex === 'string') {
+        applyAccentColor(general.accentHex);
+      }
+    }
+  } catch (error) {
+    console.warn('[Overlay] Failed to apply appearance settings:', error);
+  }
+
+  window.electronAPI?.onSettingsUpdated?.((snapshot) => {
+    const general = snapshot?.generalSettings;
+    if (!general) return;
+    if (typeof general.theme === 'string' && general.theme !== appearanceState.theme) {
+      applyThemeSetting(general.theme);
+    }
+    if (
+      typeof general.accentHex === 'string' &&
+      normalizeHex(general.accentHex) !== appearanceState.accentHex
+    ) {
+      applyAccentColor(general.accentHex);
+    }
+  });
+}
 
 // Wait for DOM to be loaded
 document.addEventListener('DOMContentLoaded', () => {
+  void initializeAppearance();
   initializeWindowControls();
   initializeContextMenu();
   initializeDragFunctionality();
@@ -19,34 +142,57 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeMicGain();
   updateAlwaysOnTopStatus();
   initializeAIProcessing();
+  setupTranscriptScrollTracking();
+  initializeLostRecapUI();
+  initializeTranscriptControls();
+  initializeLostPanelToggle();
+  initializePanelToggles();
+  initializeResponsiveLayout();
+  initializeQAPanel();
 });
 
 function initializeWindowControls() {
   // Close button
   const closeBtn = document.getElementById('close-btn');
-  closeBtn.addEventListener('click', async () => {
+  closeBtn?.addEventListener('click', async () => {
     await window.electronAPI.closeWindow();
   });
 
   // Minimize button
   const minimizeBtn = document.getElementById('minimize-btn');
-  minimizeBtn.addEventListener('click', async () => {
+  minimizeBtn?.addEventListener('click', async () => {
     await window.electronAPI.minimizeWindow();
   });
 
+  // Maximize / restore button
+  const maximizeBtn = document.getElementById('maximize-btn');
+  if (maximizeBtn) {
+    const syncMaximizeState = (isMaximized) => {
+      maximizeBtn.dataset.state = isMaximized ? 'maximized' : 'restored';
+    };
+
+    maximizeBtn.addEventListener('click', async () => {
+      const isMaximized = await window.electronAPI.toggleMaximizeWindow();
+      syncMaximizeState(isMaximized);
+    });
+
+    window.electronAPI.isWindowMaximized().then(syncMaximizeState).catch(() => {});
+    window.electronAPI.onWindowStateChange((state) => syncMaximizeState(Boolean(state)));
+  }
+
   // Record button
   const recordBtn = document.getElementById('record-btn');
-  recordBtn.addEventListener('click', async () => {
-    if (!isRecording) {
-      await startRecording();
-    } else {
-      await stopRecording();
-    }
+  recordBtn?.addEventListener('click', async () => {
+    if (!isRecording) await startRecording();
+    else await stopRecording();
   });
+  if (recordBtn) {
+    recordBtn.setAttribute('aria-pressed', isRecording ? 'true' : 'false');
+  }
 
   // Settings button (placeholder for future)
   const settingsBtn = document.getElementById('settings-btn');
-  settingsBtn.addEventListener('click', () => {
+  settingsBtn?.addEventListener('click', () => {
     showNotification('Settings will be available in a future update');
   });
 
@@ -62,24 +208,19 @@ function initializeWindowControls() {
 }
 
 function initializeContextMenu() {
-  const contextMenu = document.getElementById('context-menu');
-  const overlayContainer = document.querySelector('.overlay-container');
-  
-  // Show context menu on right-click
-  overlayContainer.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    showContextMenu(e.clientX, e.clientY);
+  const overlayRoot = document.querySelector('.overlay-root');
+  if (!overlayRoot) return;
+
+  overlayRoot.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    showContextMenu(event.clientX, event.clientY);
   });
 
-  // Hide context menu on click outside
-  document.addEventListener('click', () => {
-    hideContextMenu();
-  });
+  document.addEventListener('click', () => hideContextMenu());
 
-  // Handle always-on-top toggle
   const toggleAlwaysOnTop = document.getElementById('toggle-always-on-top');
-  toggleAlwaysOnTop.addEventListener('click', async (e) => {
-    e.stopPropagation();
+  toggleAlwaysOnTop?.addEventListener('click', async (event) => {
+    event.stopPropagation();
     const isOnTop = await window.electronAPI.toggleAlwaysOnTop();
     updateAlwaysOnTopStatus(isOnTop);
     hideContextMenu();
@@ -102,6 +243,16 @@ function showContextMenu(x, y) {
 function hideContextMenu() {
   const contextMenu = document.getElementById('context-menu');
   contextMenu.style.display = 'none';
+}
+
+function setupTranscriptScrollTracking() {
+  transcriptDisplayEl = document.getElementById('transcript-display');
+  if (!transcriptDisplayEl) return;
+  shouldAutoScroll = true;
+  transcriptDisplayEl.addEventListener('scroll', () => {
+    const { scrollTop, scrollHeight, clientHeight } = transcriptDisplayEl;
+    shouldAutoScroll = scrollTop + clientHeight >= scrollHeight - 32;
+  });
 }
 
 async function updateAlwaysOnTopStatus(isOnTop) {
@@ -155,6 +306,48 @@ document.addEventListener('keydown', (e) => {
   // Escape key hides context menu
   if (e.key === 'Escape') {
     hideContextMenu();
+  }
+
+  const key = typeof e.key === 'string' ? e.key.toLowerCase() : '';
+  
+  // Lost moment trigger (Cmd/Ctrl + L)
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && key === 'l') {
+    const target = e.target;
+    const tag = target?.tagName?.toLowerCase();
+    const isEditable =
+      target?.isContentEditable ||
+      tag === 'input' ||
+      tag === 'textarea' ||
+      tag === 'select';
+    if (isEditable) return;
+    e.preventDefault();
+    triggerLostMoment('hotkey');
+  }
+  
+  // Panel toggle shortcuts
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+    const target = e.target;
+    const tag = target?.tagName?.toLowerCase();
+    const isEditable =
+      target?.isContentEditable ||
+      tag === 'input' ||
+      tag === 'textarea' ||
+      tag === 'select';
+    if (isEditable) return;
+    
+    if (key === '1') {
+      e.preventDefault();
+      togglePanelById('transcript-panel');
+    } else if (key === '2') {
+      e.preventDefault();
+      togglePanelById('ai-panel');
+    } else if (key === '3') {
+      e.preventDefault();
+      togglePanelById('lost-panel');
+    } else if (key === '4') {
+      e.preventDefault();
+      toggleQAPanel();
+    }
   }
 });
 
@@ -341,6 +534,8 @@ async function startRecording() {
 
     // NEW: Store session ID
     currentSessionId = result.sessionId;
+    onSessionStarted(result.sessionId);
+    await syncLostSessionState();
     console.log('[RENDERER] Session started:', currentSessionId);
 
     const downloadBtn = document.getElementById('download-btn');
@@ -390,6 +585,7 @@ async function stopRecording() {
       console.log('[RENDERER] Session ended:', result.sessionId, result.stats);
       showNotification(`Session saved: ${result.stats?.segmentCount || 0} segments`);
     }
+    await syncLostSessionState();
 
     const downloadBtn = document.getElementById('download-btn');
     if (downloadBtn && currentSessionId) {
@@ -419,9 +615,9 @@ function handleTranscriptionData(data) {
     interimTextEl.textContent = data.text;
   }
 
-  // Auto-scroll to bottom
-  const transcriptDisplay = document.getElementById('transcript-display');
-  transcriptDisplay.scrollTop = transcriptDisplay.scrollHeight;
+  if (transcriptDisplayEl && shouldAutoScroll) {
+    transcriptDisplayEl.scrollTop = transcriptDisplayEl.scrollHeight;
+  }
 }
 
 function addTranscriptLine(text, confidence) {
@@ -474,18 +670,22 @@ function updateRecordingUI(recording) {
   const recordingIndicator = document.getElementById('recording-indicator');
   const audioLevelContainer = document.getElementById('audio-level-container');
 
+  if (!recordBtn || !recordText || !recordingIndicator || !audioLevelContainer) return;
+
   if (recording) {
     recordBtn.classList.add('recording');
     recordBtn.title = 'Stop Recording';
     recordText.textContent = 'Stop';
     recordingIndicator.classList.remove('hidden');
     audioLevelContainer.classList.remove('hidden');
+    recordBtn.setAttribute('aria-pressed', 'true');
   } else {
     recordBtn.classList.remove('recording');
     recordBtn.title = 'Start Recording';
     recordText.textContent = 'Start';
     recordingIndicator.classList.add('hidden');
     audioLevelContainer.classList.add('hidden');
+    recordBtn.setAttribute('aria-pressed', 'false');
     // Reset audio level when stopping
     updateAudioLevel(0);
   }
@@ -521,25 +721,27 @@ function updateAudioLevel(level) {
 }
 
 function updateConnectionStatus(status) {
+  const statusContainer = document.getElementById('connection-status');
   const statusDot = document.getElementById('status-dot');
   const statusText = document.getElementById('status-text');
 
-  // Remove all status classes
-  statusDot.classList.remove('connected', 'connecting', 'error');
+  if (!statusContainer || !statusDot || !statusText) return;
+
+  statusContainer.classList.remove('connected', 'warning');
+  statusDot.className = 'status-dot';
 
   switch (status) {
     case 'connected':
-      statusDot.classList.add('connected');
+      statusContainer.classList.add('connected');
       statusText.textContent = 'Connected';
       break;
     case 'connecting':
     case 'reconnecting':
-      statusDot.classList.add('connecting');
       statusText.textContent = 'Connecting...';
       break;
     case 'error':
-      statusDot.classList.add('error');
-      statusText.textContent = 'Error';
+      statusContainer.classList.remove('connected', 'warning');
+      statusText.textContent = 'Connection error';
       break;
     case 'disconnected':
     default:
@@ -550,32 +752,29 @@ function updateConnectionStatus(status) {
 
 // Update connection quality based on latency measurements
 function updateConnectionQuality(qualityData) {
+  const statusContainer = document.getElementById('connection-status');
   const statusText = document.getElementById('status-text');
-  const statusDot = document.getElementById('status-dot');
-  
-  if (statusText && qualityData) {
-    const latencyText = qualityData.latency ? ` (${Math.round(qualityData.latency)}ms)` : '';
-    
-    // Update status text with quality info
-    switch (qualityData.quality) {
-      case 'good':
-        statusText.textContent = `Connected${latencyText}`;
-        statusDot.classList.remove('connecting', 'error');
-        statusDot.classList.add('connected');
-        break;
-      case 'fair':
-        statusText.textContent = `Connected${latencyText}`;
-        statusDot.classList.remove('error');
-        statusDot.classList.add('connecting'); // Yellow for fair quality
-        break;
-      case 'poor':
-        statusText.textContent = `Slow${latencyText}`;
-        statusDot.classList.remove('connected', 'connecting');
-        statusDot.classList.add('error'); // Red for poor quality
-        break;
-    }
-    
-    console.log(`Connection quality: ${qualityData.quality}, avg latency: ${Math.round(qualityData.latency)}ms`);
+
+  if (!statusContainer || !statusText || !qualityData) return;
+
+  const latencyText = qualityData.latency ? ` (${Math.round(qualityData.latency)}ms)` : '';
+  statusContainer.classList.remove('connected', 'warning');
+
+  switch (qualityData.quality) {
+    case 'good':
+      statusContainer.classList.add('connected');
+      statusText.textContent = `Connected${latencyText}`;
+      break;
+    case 'fair':
+      statusContainer.classList.add('connected');
+      statusText.textContent = `Stable${latencyText}`;
+      break;
+    case 'poor':
+      statusContainer.classList.add('warning');
+      statusText.textContent = `Slow${latencyText}`;
+      break;
+    default:
+      break;
   }
 }
 
@@ -718,14 +917,32 @@ window.ai?.onUpdate?.((payload) => {
   const actionsEl  = document.querySelector('#ai-actions');
   const tagsEl     = document.querySelector('#ai-keywords');
 
-  if (summaryEl) summaryEl.textContent = payload.summary || '—';
+  if (summaryEl) {
+    const summary = typeof payload.summary === 'string' && payload.summary.trim().length
+      ? payload.summary
+      : 'Waiting for conversation...';
+    summaryEl.textContent = summary;
+    summaryEl.classList.toggle('placeholder', summary === 'Waiting for conversation...');
+  }
   if (actionsEl) {
     actionsEl.innerHTML = (payload.actions || [])
-      .map(a => `<li>${a.title}${a.owner ? ` — ${a.owner}` : ''}${a.due ? ` (due ${a.due})` : ''}</li>`)
+      .map((action) => {
+        const title = action.title || action;
+        const owner = action.owner ? ` — ${action.owner}` : '';
+        const due = action.due ? ` (due ${action.due})` : '';
+        return `<li>${title}${owner}${due}</li>`;
+      })
       .join('');
+    if (!payload.actions || payload.actions.length === 0) {
+      actionsEl.innerHTML = '<li class="placeholder">No action items detected</li>';
+    }
   }
   if (tagsEl) {
-    tagsEl.innerHTML = (payload.keywords || []).map(k => `<span class="tag">${k}</span>`).join('');
+    if (payload.keywords && payload.keywords.length) {
+      tagsEl.innerHTML = payload.keywords.map((keyword) => `<span class="keyword-chip">${keyword}</span>`).join('');
+    } else {
+      tagsEl.innerHTML = '<span class="keyword-chip placeholder">No keywords yet</span>';
+    }
   }
 });
 
@@ -741,6 +958,7 @@ function initializeAIProcessing() {
 
   // Debug logging function
   function addDebugEntry(message, type = 'info') {
+    if (!debugLog) return;
     const entry = document.createElement('div');
     entry.className = `debug-entry ${type}`;
     entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
@@ -820,13 +1038,13 @@ function initializeAIProcessing() {
         if (payload.keywords.length > 0) {
           payload.keywords.forEach(keyword => {
             const span = document.createElement('span');
-            span.className = 'tag';
+            span.className = 'keyword-chip';
             span.textContent = keyword;
             keywordsEl.appendChild(span);
           });
         } else {
           const span = document.createElement('span');
-          span.className = 'tag placeholder';
+          span.className = 'keyword-chip placeholder';
           span.textContent = 'No keywords yet';
           keywordsEl.appendChild(span);
         }
@@ -979,7 +1197,11 @@ function setupQnABox() {
     const q = (input.value || '').trim();
     if (!q) return;
     busy = true;
-    out.innerHTML = `<div class="qa-muted">Asking…</div>`;
+    out.innerHTML = `<div class="qa-muted">Asking...</div>`;
+    
+    // Show Q&A panel when asking
+    showQAPanel();
+    
     try {
       const res = await window.api.invoke('ai:query', { query: q, opts: { k: 6, mode } });
       renderQAResult(out, res);
@@ -1000,6 +1222,781 @@ function setupQnABox() {
   btn.addEventListener('click', () => ask(undefined));
 }
 
+/* -------------------------------------------------------
+ * Lost recap feature
+ * ----------------------------------------------------- */
+async function initializeLostRecapUI() {
+  lostButtonEl = document.getElementById('lost-btn');
+  lostTimelineEl = document.getElementById('lost-timeline');
+  lostRecapListEl = document.getElementById('lost-recap-list');
+  lostStatusEl = document.getElementById('lost-status-pill');
+
+  if (lostButtonEl) {
+    lostButtonEl.addEventListener('click', () => {
+      triggerLostMoment('button');
+      // Auto-expand lost panel when triggered
+      const lostPanel = document.getElementById('lost-panel');
+      if (lostPanel && !lostPanel.classList.contains('expanded')) {
+        lostPanel.classList.add('expanded');
+        lostPanel.classList.add('visible');
+        lostPanel.style.display = 'block';
+      }
+    });
+    const shortcutLabel = lostButtonEl.querySelector('.lost-trigger-shortcut');
+    if (shortcutLabel) {
+      const isMac = navigator.userAgent.includes('Mac');
+      shortcutLabel.textContent = isMac ? '⌘L' : 'Ctrl+L';
+    }
+  }
+  updateLostButtonState(Boolean(currentSessionId));
+  updateLostStatus();
+  renderLostTimeline();
+  renderLostRecapCards();
+  void loadClassesOnce();
+  await syncLostSessionState();
+}
+
+function updateLostButtonState(enabled) {
+  if (!lostButtonEl) return;
+  lostButtonEl.disabled = !enabled;
+  lostButtonEl.setAttribute('aria-disabled', String(!enabled));
+}
+
+async function syncLostSessionState() {
+  if (!window.transcriptStorage?.getCurrentSession) return;
+  try {
+    const snapshot = await window.transcriptStorage.getCurrentSession();
+    if (!snapshot || !snapshot.sessionId) {
+      lostState.sessionId = null;
+      lostState.classId = null;
+      lostState.recordId = null;
+      updateLostButtonState(false);
+      return;
+    }
+    lostState.sessionId = snapshot.sessionId;
+    if (snapshot.classId !== undefined) lostState.classId = snapshot.classId;
+    if (snapshot.recordId !== undefined) lostState.recordId = snapshot.recordId;
+    if (snapshot.startedAt) lostState.startedAt = snapshot.startedAt;
+    updateLostButtonState(true);
+  } catch (error) {
+    console.warn('[LostRecap] Failed to sync session', error);
+  }
+}
+
+function onSessionStarted(sessionId) {
+  if (lostState.sessionId && lostState.sessionId !== sessionId) {
+    lostState.markers = [];
+    lostState.queue = [];
+    lostState.processing = false;
+    lostState.lastTriggerAt = 0;
+    renderLostTimeline();
+    renderLostRecapCards();
+  }
+  lostState.sessionId = sessionId;
+  lostState.startedAt = Date.now();
+  lostState.classId = null;
+  lostState.recordId = null;
+  updateLostButtonState(Boolean(sessionId));
+}
+
+async function ensureLostSessionSnapshot() {
+  if (!window.transcriptStorage?.getCurrentSession) return;
+  try {
+    const snapshot = await window.transcriptStorage.getCurrentSession();
+    if (!snapshot) return;
+    if (snapshot.sessionId) lostState.sessionId = snapshot.sessionId;
+    if (snapshot.classId !== undefined) lostState.classId = snapshot.classId;
+    if (snapshot.recordId !== undefined) lostState.recordId = snapshot.recordId;
+    if (snapshot.startedAt) lostState.startedAt = snapshot.startedAt;
+  } catch (error) {
+    console.warn('[LostRecap] Failed to refresh session snapshot', error);
+  }
+}
+
+async function triggerLostMoment(source = 'button') {
+  await ensureLostSessionSnapshot();
+  const sessionId = lostState.sessionId || currentSessionId;
+  if (!sessionId) {
+    showNotification('Start recording to drop a lost marker.');
+    return;
+  }
+
+  const now = Date.now();
+  if (lostState.lastTriggerAt && now - lostState.lastTriggerAt < LOST_LIMITS.minGapMs) {
+    const wait = Math.ceil((LOST_LIMITS.minGapMs - (now - lostState.lastTriggerAt)) / 1000);
+    showNotification(`Hang on ${wait}s before the next marker.`);
+    return;
+  }
+
+  const elapsed = lostState.startedAt ? now - lostState.startedAt : null;
+  if (!elapsed || elapsed < LOST_LIMITS.minElapsedMs) {
+    showNotification('Need a little more context before I can recap (≈90s).');
+    return;
+  }
+
+  const marker = {
+    id: `lost_${now}`,
+    sessionId,
+    classId: lostState.classId || null,
+    recordId: lostState.recordId || null,
+    markerMs: elapsed,
+    absoluteMs: lostState.startedAt ? lostState.startedAt + elapsed : now,
+    flaggedAt: now,
+    status: 'queued',
+    cutoffMs: lostState.startedAt ? lostState.startedAt + elapsed : now,
+    structured: null,
+    summary: null,
+    error: null,
+    excerpt: null,
+  };
+
+  lostState.lastTriggerAt = now;
+  lostState.markers.push(marker);
+  renderLostTimeline();
+  renderLostRecapCards();
+  enqueueLostRecap(marker.id);
+
+  if (lostState.processing || lostState.queue.length > 1) {
+    showNotification('Recap queued. Finishing prior request first.');
+  } else {
+    showNotification('Marker saved — generating recap…');
+  }
+}
+
+function enqueueLostRecap(markerId) {
+  lostState.queue.push(markerId);
+  updateLostStatus();
+  void processLostQueue();
+}
+
+async function processLostQueue() {
+  if (lostState.processing) return;
+  const nextId = lostState.queue.shift();
+  if (!nextId) {
+    lostState.processing = false;
+    updateLostStatus();
+    return;
+  }
+  const marker = lostState.markers.find((m) => m.id === nextId);
+  if (!marker) {
+    void processLostQueue();
+    return;
+  }
+
+  lostState.processing = true;
+  marker.status = 'pending';
+  marker.error = null;
+  updateLostStatus();
+  renderLostTimeline();
+  renderLostRecapCards();
+
+  try {
+    await runLostRecap(marker);
+    marker.status = 'ready';
+  } catch (error) {
+    const message = error?.message || 'Failed to generate recap';
+    marker.status = 'error';
+    marker.error = message;
+    console.warn('[LostRecap] Generation failed:', message);
+  } finally {
+    renderLostTimeline();
+    renderLostRecapCards();
+    lostState.processing = false;
+    updateLostStatus();
+    if (lostState.queue.length) {
+      void processLostQueue();
+    }
+  }
+}
+
+async function runLostRecap(marker) {
+  const transcriptWindow = await fetchTranscriptWindow(marker);
+  const segments = transcriptWindow.segments || [];
+  if (!segments.length) {
+    throw new Error('Not enough transcript yet — try again in a moment.');
+  }
+  marker.excerpt = formatTranscriptExcerpt(segments, transcriptWindow.session?.startTime);
+  const windowMinutes = Math.max(
+    1,
+    Math.round(
+      Math.min(LOST_LIMITS.windowMs, transcriptWindow.rangeMs ?? LOST_LIMITS.windowMs) / 60000
+    )
+  );
+
+  const contextInfo = await fetchCourseContext(marker.classId);
+  const prompts = buildLostPrompts(marker, marker.excerpt, contextInfo, windowMinutes);
+  if (!window.ai?.lostRecap) {
+    throw new Error('AI bridge unavailable');
+  }
+
+  const aiResult = await window.ai.lostRecap({
+    systemPrompt: prompts.systemPrompt,
+    userPrompt: prompts.userPrompt,
+    temperature: 0.22,
+    responseFormat: { type: 'json_object' },
+  });
+
+  if (!aiResult) throw new Error('AI did not respond');
+  if (aiResult.success === false) {
+    throw new Error(aiResult.error || 'AI request failed');
+  }
+
+  const raw = aiResult.result || aiResult.payload?.result || '';
+  const structured = parseLostRecapResponse(raw);
+  marker.structured = structured;
+  marker.summary = structured?.summary || structured?.bullets || null;
+
+  await persistLostRecap(marker, structured, raw, marker.excerpt);
+}
+
+async function fetchTranscriptWindow(marker) {
+  if (!window.transcriptStorage?.getSegmentWindow) {
+    return { segments: [], session: null, rangeMs: LOST_LIMITS.windowMs };
+  }
+  const response = await window.transcriptStorage.getSegmentWindow({
+    sessionId: marker.sessionId,
+    cutoffMs: marker.cutoffMs,
+    windowMs: LOST_LIMITS.windowMs,
+    includePrereq: LOST_LIMITS.includePrereq,
+    limit: LOST_LIMITS.maxSegments,
+  });
+  if (!response?.success) {
+    throw new Error(response?.error || 'Failed to read transcript window');
+  }
+  const segments = Array.isArray(response.segments) ? response.segments : [];
+  const startMs = segments[0]?.absoluteMs ?? segments[0]?.startMs ?? marker.cutoffMs;
+  const endMs =
+    segments[segments.length - 1]?.absoluteMs ??
+    segments[segments.length - 1]?.endMs ??
+    marker.cutoffMs;
+  const rangeMs = Math.max(0, endMs - startMs);
+  return {
+    segments,
+    session: response.session || null,
+    rangeMs,
+  };
+}
+
+function formatTranscriptExcerpt(segments, sessionStart) {
+  const lines = segments
+    .map((seg) => {
+      const ts = formatRelativeTimestamp(
+        seg.absoluteMs ?? seg.startMs ?? seg.timestamp ?? Date.now(),
+        sessionStart
+      );
+      return `[${ts}] ${seg.text}`.trim();
+    })
+    .filter(Boolean);
+  let excerpt = lines.join('\n');
+  if (excerpt.length > LOST_LIMITS.maxExcerptChars) {
+    excerpt = excerpt.slice(excerpt.length - LOST_LIMITS.maxExcerptChars);
+    const firstBreak = excerpt.indexOf('\n');
+    if (firstBreak > 0) {
+      excerpt = excerpt.slice(firstBreak + 1);
+    }
+  }
+  return excerpt;
+}
+
+function formatRelativeTimestamp(ms, sessionStart) {
+  const base = typeof sessionStart === 'number' ? sessionStart : 0;
+  const relative = Math.max(0, Math.round(ms - base));
+  const totalSeconds = Math.floor(relative / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+async function fetchCourseContext(classId) {
+  const context = {
+    globalGuidelines: '',
+    classGuidelines: '',
+    classSnippets: [],
+    globalSnippets: [],
+  };
+
+  try {
+    const modelContext = await window.modelContext?.get?.();
+    const settings = modelContext?.settings;
+    if (settings) {
+      context.globalGuidelines = settings.globalGuidelines || '';
+      if (classId && settings.classContexts && settings.classContexts[classId]) {
+        context.classGuidelines = settings.classContexts[classId];
+      }
+    }
+  } catch (error) {
+    console.warn('[LostRecap] Failed to load model context', error);
+  }
+
+  if (classId) {
+    try {
+      const primer = await window.api?.invoke?.('class-context:primer', {
+        classId,
+        limit: LOST_LIMITS.contextSnippetLimit,
+      });
+      if (primer?.success && Array.isArray(primer.segments)) {
+        context.classSnippets = primer.segments.map((seg) => seg.text).filter(Boolean);
+      }
+    } catch (error) {
+      console.warn('[LostRecap] Failed to load class snippets', error);
+    }
+  }
+
+  try {
+    const globalPrimer = await window.api?.invoke?.('class-context:primer', {
+      classId: '__global__',
+      limit: Math.min(2, LOST_LIMITS.contextSnippetLimit),
+    });
+    if (globalPrimer?.success && Array.isArray(globalPrimer.segments)) {
+      context.globalSnippets = globalPrimer.segments.map((seg) => seg.text).filter(Boolean);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return context;
+}
+
+async function loadClassesOnce() {
+  if (lostState.classes) return lostState.classes;
+  if (!window.transcriptStorage?.listClasses) {
+    lostState.classes = {};
+    return {};
+  }
+  try {
+    const response = await window.transcriptStorage.listClasses();
+    const list = response?.classes || response?.result || [];
+    const map = {};
+    if (Array.isArray(list)) {
+      list.forEach((cls) => {
+        if (cls?.id) map[cls.id] = cls;
+      });
+    }
+    lostState.classes = map;
+    return map;
+  } catch (error) {
+    console.warn('[LostRecap] Failed to load classes', error);
+    lostState.classes = {};
+    return {};
+  }
+}
+
+function buildLostPrompts(marker, excerpt, contextInfo, windowMinutes) {
+  const classes = lostState.classes || {};
+  const classInfo = marker.classId ? classes[marker.classId] : null;
+  const courseLabel = classInfo?.code || classInfo?.name || 'Live class';
+  const topicGuess = classInfo?.name || 'Current lecture';
+  const flaggedAt = formatClock(marker.markerMs);
+
+  const snippetBlock = (contextInfo.classSnippets || []).slice(0, LOST_LIMITS.contextSnippetLimit);
+  const globalSnippetBlock = (contextInfo.globalSnippets || []).slice(0, 2);
+
+  const systemPrompt =
+    'You are a patient tutor. Explain concepts clearly in short steps, define jargon, ' +
+    'and match an 8th–10th grade reading level unless technical precision is essential. ' +
+    'Never include content that occurs after the flagged timestamp.';
+
+  const userPrompt = [
+    `Context: Course "${courseLabel}", Topic "${topicGuess}".`,
+    `Student flagged confusion at ${flaggedAt}. Summarize the last ${windowMinutes} minute(s) up to this time only; never reference future content.`,
+    '',
+    'Transcript excerpt (chronological):',
+    excerpt,
+    '',
+    'Course guidelines:',
+    contextInfo.globalGuidelines || 'None provided.',
+    contextInfo.classGuidelines ? `\nClass-specific guidance:\n${contextInfo.classGuidelines}` : '',
+    '',
+    'Class reference snippets:',
+    snippetBlock.length ? snippetBlock.map((text, idx) => `${idx + 1}. ${text}`).join('\n') : 'None.',
+    '',
+    'Global reference snippets:',
+    globalSnippetBlock.length
+      ? globalSnippetBlock.map((text, idx) => `${idx + 1}. ${text}`).join('\n')
+      : 'None.',
+    '',
+    'Deliverables (respond ONLY in JSON matching this schema):',
+    `{
+  "summary": ["Plain-language recap bullet (3-6 total)"],
+  "prerequisites": ["Concepts to review, reference earlier timestamps if possible"],
+  "steps": ["Step-by-step explanation of the idea"],
+  "workedExample": {
+    "title": "Short title",
+    "steps": ["step 1", "step 2"],
+    "answer": "final answer or takeaway"
+  },
+  "selfCheck": [
+    { "question": "short question", "answer": "short folded answer" }
+  ]
+}`,
+    '',
+    'If math/code is involved, use LaTeX or monospace formatting inline. ' +
+      'Keep answers concise and grounded strictly in the provided excerpt.',
+  ].join('\n');
+
+  return { systemPrompt, userPrompt };
+}
+
+function parseLostRecapResponse(text) {
+  if (!text) return null;
+  const cleaned = stripJsonPayload(text);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    try {
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start !== -1 && end !== -1) {
+        return JSON.parse(cleaned.slice(start, end + 1));
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const fallbackSummary = cleaned
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  return { summary: fallbackSummary };
+}
+
+function stripJsonPayload(text) {
+  return text.replace(/```(?:json)?/gi, '```').replace(/```/g, '').trim();
+}
+
+async function persistLostRecap(marker, structured, rawText, excerpt) {
+  if (!window.transcriptStorage?.saveTranscription) return;
+  if (!marker.sessionId) return;
+
+  const classes = await loadClassesOnce();
+  const classInfo = marker.classId ? classes[marker.classId] : null;
+
+  const summaryText = Array.isArray(structured?.summary)
+    ? structured.summary.join(' ')
+    : undefined;
+
+  const payload = {
+    id: marker.savedRecordId || `lostrecap_${marker.sessionId}_${Math.round(marker.markerMs)}`,
+    sessionId: marker.sessionId,
+    classId: marker.classId,
+    title: `${classInfo?.code || 'Lost recap'} • ${formatClock(marker.markerMs)}`,
+    createdAt: marker.flaggedAt,
+    durationMinutes: 0,
+    wordCount: 0,
+    status: 'note',
+    summary: summaryText?.slice(0, 280) || `Recap at ${formatClock(marker.markerMs)}`,
+    content: JSON.stringify({
+      type: 'lost-recap',
+      markerMs: marker.markerMs,
+      flaggedAt: marker.flaggedAt,
+      excerpt,
+      structured,
+      raw: rawText,
+    }),
+    tags: ['lost-recap'],
+    flagged: 0,
+  };
+
+  try {
+    const response = await window.transcriptStorage.saveTranscription(payload);
+    if (response?.success && response.record) {
+      marker.savedRecordId = response.record.id || payload.id;
+    } else {
+      marker.savedRecordId = payload.id;
+    }
+  } catch (error) {
+    console.warn('[LostRecap] Failed to persist recap note', error);
+  }
+}
+
+function renderLostTimeline() {
+  if (!lostTimelineEl) return;
+  lostTimelineEl.innerHTML = '';
+
+  if (!lostState.markers.length) {
+    const empty = document.createElement('div');
+    empty.className = 'lost-timeline-empty';
+    empty.textContent = 'Lost markers will appear here.';
+    lostTimelineEl.appendChild(empty);
+    return;
+  }
+
+  lostState.markers
+    .slice()
+    .sort((a, b) => a.markerMs - b.markerMs)
+    .forEach((marker) => {
+      const chip = createLostChip(marker);
+      lostTimelineEl.appendChild(chip);
+    });
+}
+
+function createLostChip(marker) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = `lost-chip ${marker.status || ''}`.trim();
+  chip.dataset.id = marker.id;
+  chip.innerHTML = `<span class="lost-chip-dot"></span>${formatClock(marker.markerMs)}`;
+  chip.addEventListener('click', () => focusLostCard(marker.id));
+  return chip;
+}
+
+function focusLostCard(markerId) {
+  const marker = lostState.markers.find((m) => m.id === markerId);
+  if (!marker) return;
+  marker.dismissed = false;
+  renderLostRecapCards();
+  requestAnimationFrame(() => {
+    const card = lostRecapListEl?.querySelector(`[data-marker="${markerId}"]`);
+    if (card?.scrollIntoView) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+}
+
+function renderLostRecapCards() {
+  if (!lostRecapListEl) return;
+  lostRecapListEl.innerHTML = '';
+
+  const visibleMarkers = lostState.markers.filter((marker) => !marker.dismissed);
+  if (!visibleMarkers.length) {
+    const empty = document.createElement('div');
+    empty.className = 'lost-empty-state';
+    empty.textContent = 'Tap “I’m lost” when the lecture drifts — we’ll build a recap without stopping.';
+    lostRecapListEl.appendChild(empty);
+    
+    // Hide lost panel when empty
+    const lostPanel = document.getElementById('lost-panel');
+    if (lostPanel && lostPanel.classList.contains('expanded')) {
+      lostPanel.classList.remove('expanded');
+      lostPanel.classList.remove('visible');
+      lostPanel.style.display = 'none';
+    }
+    return;
+  }
+
+  // Show lost panel when there are markers
+  const lostPanel = document.getElementById('lost-panel');
+  if (lostPanel && !lostPanel.classList.contains('expanded')) {
+    lostPanel.classList.add('expanded');
+    lostPanel.classList.add('visible');
+    lostPanel.style.display = 'block';
+  }
+
+  visibleMarkers
+    .slice()
+    .sort((a, b) => a.markerMs - b.markerMs)
+    .forEach((marker) => {
+      lostRecapListEl.appendChild(createLostCard(marker));
+    });
+}
+
+function createLostCard(marker) {
+  const card = document.createElement('div');
+  card.className = `lost-recap-card ${marker.status || ''}`.trim();
+  card.dataset.marker = marker.id;
+
+  const header = document.createElement('div');
+  header.className = 'lost-recap-header';
+
+  const time = document.createElement('div');
+  time.className = 'lost-recap-time';
+  time.textContent = formatClock(marker.markerMs);
+
+  const statusLabel = document.createElement('div');
+  statusLabel.className = 'lost-recap-status';
+  if (marker.status === 'pending') statusLabel.textContent = 'Generating recap…';
+  else if (marker.status === 'error') {
+    statusLabel.textContent = marker.error || 'Something went wrong';
+    statusLabel.classList.add('error');
+  } else {
+    statusLabel.textContent = 'Ready';
+  }
+
+  header.appendChild(time);
+  header.appendChild(statusLabel);
+  card.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'lost-recap-body';
+
+  if (marker.status === 'pending') {
+    body.innerHTML = '<div>Gathering context and drafting a recap…</div>';
+  } else if (marker.status === 'error') {
+    body.innerHTML = `<div>${marker.error || 'Unable to generate recap.'}</div>`;
+    const retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'lost-action-btn';
+    retryBtn.textContent = 'Retry';
+    retryBtn.addEventListener('click', () => {
+      marker.status = 'queued';
+      marker.error = null;
+      enqueueLostRecap(marker.id);
+      renderLostRecapCards();
+    });
+    body.appendChild(retryBtn);
+  } else if (marker.structured) {
+    const summaryList = buildList(marker.structured.summary || marker.structured.bullets);
+    if (summaryList) {
+      const section = document.createElement('div');
+      section.innerHTML = `<div class="lost-section-title">Recap</div>`;
+      section.appendChild(summaryList);
+      body.appendChild(section);
+    }
+
+    const prereqList = buildList(marker.structured.prerequisites);
+    if (prereqList) {
+      const section = document.createElement('div');
+      section.innerHTML = `<div class="lost-section-title">Prerequisites</div>`;
+      section.appendChild(prereqList);
+      body.appendChild(section);
+    }
+
+    const stepsList = buildList(marker.structured.steps);
+    if (stepsList) {
+      const section = document.createElement('div');
+      section.innerHTML = `<div class="lost-section-title">Step-by-step</div>`;
+      section.appendChild(stepsList);
+      body.appendChild(section);
+    }
+
+    if (marker.structured.workedExample) {
+      const example = marker.structured.workedExample;
+      const steps = buildList(example.steps);
+      const section = document.createElement('div');
+      section.innerHTML = `<div class="lost-section-title">Worked example${
+        example.title ? ` — ${example.title}` : ''
+      }</div>`;
+      if (steps) section.appendChild(steps);
+      if (example.answer) {
+        const answerEl = document.createElement('div');
+        answerEl.textContent = `➤ ${example.answer}`;
+        section.appendChild(answerEl);
+      }
+      body.appendChild(section);
+    }
+
+    if (Array.isArray(marker.structured.selfCheck) && marker.structured.selfCheck.length) {
+      const section = document.createElement('div');
+      section.innerHTML = `<div class="lost-section-title">Self-check</div>`;
+      marker.structured.selfCheck.forEach((item, idx) => {
+        if (!item?.question) return;
+        const details = document.createElement('details');
+        details.className = 'lost-selfcheck';
+        const summary = document.createElement('summary');
+        summary.textContent = `${idx + 1}. ${item.question}`;
+        const answer = document.createElement('p');
+        answer.textContent = item.answer || 'Answer';
+        details.appendChild(summary);
+        details.appendChild(answer);
+        section.appendChild(details);
+      });
+      body.appendChild(section);
+    }
+  } else {
+    body.innerHTML = '<div class="lost-section-title">Recap saved.</div>';
+  }
+
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'lost-recap-actions';
+
+  const jumpBtn = document.createElement('button');
+  jumpBtn.type = 'button';
+  jumpBtn.className = 'lost-action-btn primary';
+  jumpBtn.textContent = `Jump to ${formatClock(marker.markerMs)}`;
+  jumpBtn.addEventListener('click', () => jumpToMarker(marker));
+  actions.appendChild(jumpBtn);
+
+  const followBtn = document.createElement('button');
+  followBtn.type = 'button';
+  followBtn.className = 'lost-action-btn';
+  followBtn.textContent = 'Ask follow-up';
+  followBtn.addEventListener('click', () => prefillFollowUp(marker));
+  actions.appendChild(followBtn);
+
+  const pinBtn = document.createElement('button');
+  pinBtn.type = 'button';
+  pinBtn.className = 'lost-action-btn';
+  pinBtn.textContent = marker.savedRecordId ? 'Pinned to notes' : 'Pin to notes';
+  pinBtn.disabled = Boolean(marker.savedRecordId || marker.status !== 'ready');
+  pinBtn.addEventListener('click', async () => {
+    if (marker.savedRecordId || marker.status !== 'ready') return;
+    await persistLostRecap(marker, marker.structured, '', marker.excerpt);
+    pinBtn.textContent = 'Pinned to notes';
+    pinBtn.disabled = true;
+  });
+  actions.appendChild(pinBtn);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'lost-action-btn danger';
+  closeBtn.textContent = 'Close';
+  closeBtn.addEventListener('click', () => {
+    marker.dismissed = true;
+    renderLostRecapCards();
+  });
+  actions.appendChild(closeBtn);
+
+  card.appendChild(actions);
+  return card;
+}
+
+function buildList(items) {
+  if (!Array.isArray(items) || !items.length) return null;
+  const list = document.createElement('ul');
+  list.className = 'lost-list';
+  items.forEach((item) => {
+    if (!item) return;
+    const li = document.createElement('li');
+    li.textContent = typeof item === 'string' ? item : JSON.stringify(item);
+    list.appendChild(li);
+  });
+  return list;
+}
+
+function updateLostStatus() {
+  if (!lostStatusEl) return;
+  if (lostState.processing) {
+    lostStatusEl.textContent = 'Generating…';
+    lostStatusEl.classList.add('busy');
+  } else if (lostState.queue.length) {
+    lostStatusEl.textContent = 'Queued';
+    lostStatusEl.classList.add('busy');
+  } else {
+    lostStatusEl.textContent = 'Ready';
+    lostStatusEl.classList.remove('busy');
+  }
+}
+
+function jumpToMarker(marker) {
+  if (!marker) return;
+  window.bus?.jumpTo?.({ startMs: marker.markerMs, sessionId: marker.sessionId });
+  showNotification('Jumped to the marked moment');
+}
+
+function prefillFollowUp(marker) {
+  const input = document.getElementById('qa-input');
+  if (!input) return;
+  const summary = Array.isArray(marker?.structured?.summary)
+    ? marker.structured.summary.join(' ')
+    : '';
+  input.value = summary
+    ? `Can you clarify this part: ${summary.slice(0, 100)}?`
+    : 'I have a follow-up question about the recap.';
+  input.focus();
+}
+
+function formatClock(ms) {
+  return formatRelativeTimestamp(ms, 0);
+}
+
 // NEW: Segment counter update
 function updateSegmentCounter(count) {
   const counterEl = document.getElementById('segment-counter');
@@ -1015,6 +2012,263 @@ function updateSegmentCounter(count) {
       counterEl.classList.add('hidden');
     }
   }
+}
+
+// Initialize transcript controls
+function initializeTranscriptControls() {
+  const scrollToBottomBtn = document.getElementById('scroll-to-bottom');
+  const clearTranscriptBtn = document.getElementById('clear-transcript');
+  
+  if (scrollToBottomBtn) {
+    scrollToBottomBtn.addEventListener('click', () => {
+      if (transcriptDisplayEl) {
+        transcriptDisplayEl.scrollTop = transcriptDisplayEl.scrollHeight;
+        shouldAutoScroll = true;
+      }
+    });
+  }
+  
+  if (clearTranscriptBtn) {
+    clearTranscriptBtn.addEventListener('click', () => {
+      if (confirm('Clear all transcript content?')) {
+        clearTranscript();
+      }
+    });
+  }
+}
+
+// Clear transcript function
+function clearTranscript() {
+  const finalTextEl = document.getElementById('final-text');
+  const interimTextEl = document.getElementById('interim-text');
+  
+  if (finalTextEl) {
+    finalTextEl.innerHTML = '<div class="placeholder-text" id="placeholder-text">Ready for transcription.<br /><small>Press the record button or use Ctrl + Shift + T to toggle the overlay.</small></div>';
+  }
+  
+  if (interimTextEl) {
+    interimTextEl.textContent = '';
+  }
+  
+  // Reset transcript data
+  transcriptLines = [];
+  totalSegmentCount = 0;
+  updateSegmentCounter(0);
+  
+  // Show placeholder
+  showPlaceholderText();
+}
+
+// Initialize lost panel toggle
+function initializeLostPanelToggle() {
+  const lostPanelToggle = document.getElementById('lost-panel-toggle');
+  const lostPanel = document.getElementById('lost-panel');
+  
+  if (lostPanelToggle && lostPanel) {
+    lostPanelToggle.addEventListener('click', () => {
+      const isExpanded = lostPanel.classList.contains('expanded');
+      if (isExpanded) {
+        lostPanel.classList.remove('expanded');
+        lostPanel.classList.remove('visible');
+        lostPanel.style.display = 'none';
+      } else {
+        lostPanel.classList.add('expanded');
+        lostPanel.classList.add('visible');
+        lostPanel.style.display = 'block';
+      }
+    });
+  }
+}
+
+// Initialize panel toggles for collapsible panels
+function initializePanelToggles() {
+  const panels = document.querySelectorAll('.panel.collapsible');
+  
+  panels.forEach(panel => {
+    const header = panel.querySelector('.panel-header');
+    const toggle = panel.querySelector('.panel-toggle');
+    
+    if (header && toggle) {
+      // Toggle on header click
+      header.addEventListener('click', (e) => {
+        if (e.target === toggle) return; // Don't toggle if clicking the toggle button
+        togglePanel(panel);
+      });
+      
+      // Toggle on toggle button click
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        togglePanel(panel);
+      });
+    }
+  });
+}
+
+// Toggle panel collapsed/expanded state
+function togglePanel(panel) {
+  const isCollapsed = panel.classList.contains('collapsed');
+  
+  if (isCollapsed) {
+    panel.classList.remove('collapsed');
+    panel.classList.add('expanded');
+  } else {
+    panel.classList.remove('expanded');
+    panel.classList.add('collapsed');
+  }
+  
+  // Update layout after toggle
+  updateLayout();
+}
+
+// Initialize responsive layout system
+function initializeResponsiveLayout() {
+  const mainContent = document.getElementById('main-content');
+  if (!mainContent) return;
+  
+  // Check initial screen size
+  updateLayout();
+  
+  // Listen for window resize
+  window.addEventListener('resize', debounce(updateLayout, 250));
+}
+
+// Update layout based on screen size
+function updateLayout() {
+  const mainContent = document.getElementById('main-content');
+  if (!mainContent) return;
+  
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  
+  // Determine layout based on available space
+  if (width < 900 || height < 600) {
+    // Single column layout for small screens
+    mainContent.className = 'overlay-main-content single-column';
+  } else {
+    // Two column layout for larger screens
+    mainContent.className = 'overlay-main-content two-column';
+  }
+  
+  // Ensure panels are properly sized
+  const panels = document.querySelectorAll('.panel');
+  panels.forEach(panel => {
+    if (panel.classList.contains('expanded')) {
+      panel.style.flex = '1';
+    } else if (panel.classList.contains('collapsed')) {
+      panel.style.flex = 'none';
+    }
+  });
+}
+
+// Toggle panel by ID
+function togglePanelById(panelId) {
+  const panel = document.getElementById(panelId);
+  if (panel) {
+    if (panel.classList.contains('collapsible')) {
+      togglePanel(panel);
+    } else if (panelId === 'lost-panel') {
+      const isExpanded = panel.classList.contains('expanded');
+      if (isExpanded) {
+        panel.classList.remove('expanded');
+        panel.classList.remove('visible');
+        panel.style.display = 'none';
+      } else {
+        panel.classList.add('expanded');
+        panel.classList.add('visible');
+        panel.style.display = 'block';
+      }
+    } else if (panelId === 'qa-panel') {
+      toggleQAPanel();
+    }
+  }
+}
+
+// Initialize Q&A panel functionality
+function initializeQAPanel() {
+  const qaToggleBtn = document.getElementById('qa-toggle-btn');
+  const qaPanel = document.getElementById('qa-panel');
+  const qaToggle = document.getElementById('qa-toggle');
+  
+  if (qaToggleBtn && qaPanel) {
+    qaToggleBtn.addEventListener('click', () => {
+      toggleQAPanel();
+    });
+  }
+  
+  if (qaToggle && qaPanel) {
+    qaToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleQAPanel();
+    });
+  }
+  
+  // Auto-show Q&A panel when there are results
+  const qaResults = document.getElementById('qa-results');
+  if (qaResults) {
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.type === 'childNodes' && qaResults.children.length > 0) {
+          const hasContent = Array.from(qaResults.children).some(child => 
+            child.textContent.trim() && !child.textContent.includes('Asking...')
+          );
+          if (hasContent && !qaPanel.classList.contains('visible')) {
+            showQAPanel();
+          }
+        }
+      });
+    });
+    
+    observer.observe(qaResults, { childList: true, subtree: true });
+  }
+}
+
+// Toggle Q&A panel visibility
+function toggleQAPanel() {
+  const qaPanel = document.getElementById('qa-panel');
+  if (!qaPanel) return;
+  
+  const isVisible = qaPanel.classList.contains('visible');
+  if (isVisible) {
+    hideQAPanel();
+  } else {
+    showQAPanel();
+  }
+}
+
+// Show Q&A panel
+function showQAPanel() {
+  const qaPanel = document.getElementById('qa-panel');
+  if (qaPanel) {
+    qaPanel.classList.add('visible');
+    qaPanel.style.display = 'block';
+    // Focus on input when panel opens
+    const qaInput = document.getElementById('qa-input');
+    if (qaInput) {
+      setTimeout(() => qaInput.focus(), 100);
+    }
+  }
+}
+
+// Hide Q&A panel
+function hideQAPanel() {
+  const qaPanel = document.getElementById('qa-panel');
+  if (qaPanel) {
+    qaPanel.classList.remove('visible');
+    qaPanel.style.display = 'none';
+  }
+}
+
+// Debounce utility function
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
 }
 
 // NEW: Download transcript function

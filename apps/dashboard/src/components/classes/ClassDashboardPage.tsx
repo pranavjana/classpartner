@@ -749,7 +749,7 @@ function ClassOverviewPanel({ stats, recentSessions, pinnedNotes, allNotesCount,
               {pinnedNotes.length === 0 ? (
                 <EmptyState
                   message="No pinned notes yet"
-                  ctaHref={`/classes/${classInfo.id}?tab=notes`}
+                  ctaHref={`/classes/workspace?classId=${classInfo.id}&tab=notes`}
                   ctaLabel="Open notes tab"
                 />
               ) : (

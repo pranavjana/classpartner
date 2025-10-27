@@ -4,6 +4,8 @@ const { createProvider } = require('./providers/providerFactory');
 
 const DEFAULT_GLOBAL_GUIDELINES =
   'Summarise the lecture in clear sections: recap previous material, key concepts, demonstrations, and next steps. Highlight equations or definitions explicitly and list action items.';
+const DEFAULT_LOST_RECAP_SYSTEM_PROMPT =
+  'You are a patient tutor. Explain concepts clearly, avoid jargon unless defined, and keep steps small. Write for an 8th–10th grade reader unless higher rigor is required.';
 
 // Ensure fetch in worker (Electron on older Node)
 if (typeof fetch === 'undefined') {
@@ -682,6 +684,29 @@ parentPort.on('message', async (msg) => {
       const { id, query, opts } = msg.payload;
       const result = await answerQueryFast(query, opts);
       post('ai:query:result', { id, ...result });
+      return;
+    }
+
+    if (msg?.type === 'lost-recap:request') {
+      const requestId = msg.payload?.requestId;
+      if (!requestId) return;
+      const raw = msg.payload?.data || {};
+      const job = {
+        systemPrompt: raw.systemPrompt || DEFAULT_LOST_RECAP_SYSTEM_PROMPT,
+        userPrompt: raw.userPrompt || '',
+        temperature: typeof raw.temperature === 'number' ? raw.temperature : 0.25,
+        responseFormat: raw.responseFormat,
+      };
+      try {
+        const result = await llmCall('lostRecap', job);
+        post('lost-recap:result', { requestId, success: true, result });
+      } catch (error) {
+        post('lost-recap:result', {
+          requestId,
+          success: false,
+          error: String(error?.message ?? error),
+        });
+      }
       return;
     }
   } catch (e) {

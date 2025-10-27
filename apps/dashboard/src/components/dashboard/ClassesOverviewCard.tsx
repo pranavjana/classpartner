@@ -4,7 +4,6 @@ import * as React from "react";
 import Link from "next/link";
 import { useClasses } from "@/lib/classes/provider";
 import { useDashboardData } from "@/lib/dashboard/provider";
-import { getClassDashboardDetail } from "@/lib/seed/data";
 import { Badge } from "@/components/ui/badge";
 import { ChevronRight } from "lucide-react";
 
@@ -33,14 +32,13 @@ export default function ClassesOverviewCard({ className = "" }: { className?: st
         <div className="text-sm text-muted-foreground">No classes yet — add one from the sidebar.</div>
       ) : (
         <div className="space-y-3">
-            {classes.map((c) => {
-              const hasDashboard = Boolean(getClassDashboardDetail(c.slug));
-              const content = (
-                <>
-                  <span className="h-3 w-3 rounded-full bg-primary" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">
-                      {c.code} — {c.name}
+          {classes.map((c) => {
+            const content = (
+              <>
+                <span className="h-3 w-3 rounded-full bg-primary" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">
+                    {c.code} — {c.name}
                   </p>
                 </div>
                 <Badge variant="secondary" className="text-xs font-normal">
@@ -50,19 +48,17 @@ export default function ClassesOverviewCard({ className = "" }: { className?: st
               </>
             );
 
-              const href = hasDashboard
-                ? `/classes/${c.slug}`
-                : `/classes/workspace?classId=${c.id}`;
+            const href = `/classes/workspace?classId=${c.id}`;
 
-              return (
-                <Link
-                  key={c.id}
-                  href={href}
-                  className="flex items-center gap-4 rounded-lg p-2 transition hover:bg-muted"
-                >
-                  {content}
-                </Link>
-              );
+            return (
+              <Link
+                key={c.id}
+                href={href}
+                className="flex items-center gap-4 rounded-lg p-2 transition hover:bg-muted"
+              >
+                {content}
+              </Link>
+            );
           })}
         </div>
       )}

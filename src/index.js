@@ -23,6 +23,7 @@ let aiPipeline = null;
 let transcriptStorage = null; // NEW: Storage service
 let currentSessionId = null;  // NEW: Track current recording session
 let currentSessionMeta = { classId: null, recordId: null };
+let currentSessionStartedAt = null;
 
 // ---------- helpers
 function sendToAll(channel, payload) {
@@ -264,10 +265,10 @@ function createOverlayWindow() {
 
   const { width: screenWidth } = screen.getPrimaryDisplay().workAreaSize;
   const savedBounds = store.get('overlayBounds', {
-    x: screenWidth - 420,
+    x: screenWidth - 500,
     y: 20,
-    width: 400,
-    height: 1000,
+    width: 480,
+    height: 800,
   });
 
   overlayWindow = new BrowserWindow({
@@ -288,6 +289,9 @@ function createOverlayWindow() {
   overlayWindow.loadFile(path.join(__dirname, 'index.html'));
 
   overlayWindow.on('moved', () => store.set('overlayBounds', overlayWindow.getBounds()));
+  overlayWindow.on('resized', () => store.set('overlayBounds', overlayWindow.getBounds()));
+  overlayWindow.on('maximize', () => overlayWindow?.webContents.send('window:maximize-changed', true));
+  overlayWindow.on('unmaximize', () => overlayWindow?.webContents.send('window:maximize-changed', false));
   overlayWindow.once('ready-to-show', () => {
     overlayWindow.show();
     overlayWindow.setOpacity(0);
@@ -518,6 +522,16 @@ function setupIpcHandlers() {
   });
   ipcMain.handle('is-always-on-top', () => (overlayWindow ? overlayWindow.isAlwaysOnTop() : false));
   ipcMain.handle('get-window-bounds', () => (overlayWindow ? overlayWindow.getBounds() : null));
+  ipcMain.handle('window-toggle-maximize', () => {
+    if (!overlayWindow) return false;
+    if (overlayWindow.isMaximized()) {
+      overlayWindow.unmaximize();
+      return false;
+    }
+    overlayWindow.maximize();
+    return true;
+  });
+  ipcMain.handle('window-is-maximized', () => (overlayWindow ? overlayWindow.isMaximized() : false));
   ipcMain.on('window-resize', (_e, w, h) => overlayWindow && overlayWindow.setSize(Math.round(w), Math.round(h)));
 
   // From Dashboard: open/toggle overlay
@@ -549,7 +563,9 @@ function setupIpcHandlers() {
   ipcMain.handle('get-settings', () => store.store);
   ipcMain.handle('update-settings', (_e, settings) => {
     Object.keys(settings).forEach((k) => store.set(k, settings[k]));
-    return store.store;
+    const snapshot = store.store;
+    sendToAll('settings:updated', snapshot);
+    return snapshot;
   });
 
   // Manual enqueue
@@ -581,7 +597,9 @@ function setupIpcHandlers() {
         classId: classId ?? null,
         recordId: recordId ?? null,
       };
+      const nowTs = Date.now();
       transcriptStorage.createSession(currentSessionId);
+      currentSessionStartedAt = nowTs;
 
       // NEW: Notify AI worker of session start
       aiPipeline.worker.postMessage({
@@ -619,6 +637,7 @@ function setupIpcHandlers() {
         const returnSessionId = currentSessionId;
         currentSessionId = null;
         currentSessionMeta = { classId: null, recordId: null };
+        currentSessionStartedAt = null;
         return { success: true, message: 'Transcription stopped', sessionId: returnSessionId, stats: sessionStats };
       }
 
@@ -700,6 +719,45 @@ function setupIpcHandlers() {
     }
   });
 
+  ipcMain.handle('ai:lost-recap', async (_evt, payload = {}) => {
+    try {
+      ensureAiPipeline();
+      if (!aiPipeline?.worker) throw new Error('AI pipeline not ready');
+
+      const requestId = 'lost_' + Math.random().toString(36).slice(2);
+
+      const result = await new Promise((resolve, reject) => {
+        let timeout;
+        const handler = (msg) => {
+          if (msg?.type !== 'lost-recap:result') return;
+          if (msg?.payload?.requestId !== requestId) return;
+          cleanup();
+          resolve(msg.payload);
+        };
+
+        const cleanup = () => {
+          if (timeout) clearTimeout(timeout);
+          aiPipeline.worker.off('message', handler);
+        };
+
+        timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error('Lost recap request timed out'));
+        }, 60_000);
+
+        aiPipeline.worker.on('message', handler);
+        aiPipeline.worker.postMessage({
+          type: 'lost-recap:request',
+          payload: { requestId, data: payload },
+        });
+      });
+
+      return result;
+    } catch (error) {
+      return { success: false, error: String(error?.message ?? error) };
+    }
+  });
+
   ipcMain.handle('ai:selftest', async () => {
     if (!aiPipeline) return { success: false, error: 'aiPipeline not ready' };
     const segs = [
@@ -735,6 +793,25 @@ function setupIpcHandlers() {
       const transcript = transcriptStorage.getFullTranscript(sessionId, true);
       const session = transcriptStorage.getSession(sessionId);
       return { success: true, transcript, session };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('transcript:get-window', async (_evt, payload = {}) => {
+    try {
+      ensureTranscriptStorage();
+      const sessionId = payload.sessionId || currentSessionId;
+      if (!sessionId) return { success: false, error: 'sessionId is required' };
+      const options = {
+        cutoffMs: typeof payload.cutoffMs === 'number' ? payload.cutoffMs : undefined,
+        windowMs: typeof payload.windowMs === 'number' ? payload.windowMs : undefined,
+        limit: typeof payload.limit === 'number' ? payload.limit : undefined,
+        includePrereq: typeof payload.includePrereq === 'number' ? payload.includePrereq : undefined,
+      };
+      const segments = transcriptStorage.getSegmentsWindow(sessionId, options);
+      const session = transcriptStorage.getSession(sessionId);
+      return { success: true, segments, session };
     } catch (e) {
       return { success: false, error: String(e?.message ?? e) };
     }
@@ -780,7 +857,15 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle('transcript:get-current-session', () => {
-    return { sessionId: currentSessionId };
+    if (!currentSessionId) {
+      return { sessionId: null, classId: null, recordId: null, startedAt: null };
+    }
+    return {
+      sessionId: currentSessionId,
+      classId: currentSessionMeta.classId,
+      recordId: currentSessionMeta.recordId,
+      startedAt: currentSessionStartedAt,
+    };
   });
 
   ipcMain.handle('transcript:get-sessions', async (_evt, limit = 50) => {
@@ -1023,6 +1108,52 @@ function setupIpcHandlers() {
       };
     } catch (error) {
       console.error('[ClassContext] Ingest handler failed:', error);
+      return { success: false, error: String(error?.message ?? error) };
+    }
+  });
+
+  ipcMain.handle('class-context:primer', (_evt, payload = {}) => {
+    try {
+      ensureTranscriptStorage();
+      const classId = typeof payload.classId === 'string' ? payload.classId : null;
+      if (!classId) throw new Error('classId is required');
+      const limit = typeof payload.limit === 'number' ? payload.limit : 5;
+      const segments = transcriptStorage.getClassContextPrimer(classId, limit);
+      return { success: true, segments };
+    } catch (error) {
+      console.error('[ClassContext] Primer handler failed:', error);
+      return { success: false, error: String(error?.message ?? error) };
+    }
+  });
+
+  ipcMain.handle('class-context:list', (_evt, payload) => {
+    try {
+      ensureTranscriptStorage();
+      const classId = payload && typeof payload.classId === 'string' ? payload.classId : null;
+      if (!classId) {
+        throw new Error('classId is required');
+      }
+      const sources = transcriptStorage.getClassContextSources(classId);
+      return { success: true, sources };
+    } catch (error) {
+      console.error('[ClassContext] List handler failed:', error);
+      return { success: false, error: String(error?.message ?? error) };
+    }
+  });
+
+  ipcMain.handle('class-context:remove-source', (_evt, payload) => {
+    try {
+      ensureTranscriptStorage();
+      const classId = payload && typeof payload.classId === 'string' ? payload.classId : null;
+      const sourceId = payload && typeof payload.sourceId === 'string' ? payload.sourceId : null;
+      if (!classId) throw new Error('classId is required');
+      if (!sourceId) throw new Error('sourceId is required');
+
+      transcriptStorage.deleteClassContextSource(sourceId);
+      sendToAll('class-context:removed', { classId, sourceId });
+      return { success: true };
+    } catch (error) {
+      console.error('[ClassContext] Remove handler failed:', error);
       return { success: false, error: String(error?.message ?? error) };
     }
   });

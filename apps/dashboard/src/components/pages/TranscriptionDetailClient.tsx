@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { TagInput } from "@/components/ui/tag-input";
 import { useDashboardData } from "@/lib/dashboard/provider";
+import type { TranscriptionRecord, TranscriptSegment } from "@/lib/dashboard/provider";
 import { useClasses } from "@/lib/classes/provider";
 
 const STATUS_OPTIONS = [
@@ -37,6 +38,27 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
     setSummary(record?.summary ?? "");
     setTagList(record?.tags ?? []);
   }, [record?.summary, record?.tags]);
+
+  const isLostRecap = record?.tags?.includes("lost-recap");
+  const relatedRecaps = React.useMemo(() => {
+    if (!record?.sessionId) return [];
+    return transcriptions
+      .filter(
+        (tx) =>
+          tx.id !== record.id &&
+          tx.sessionId === record.sessionId &&
+          tx.tags?.includes("lost-recap")
+      )
+      .map((entry) => ({
+        entry,
+        payload: parseLostRecapContent(entry),
+      }))
+      .filter(
+        (item): item is { entry: TranscriptionRecord; payload: LostRecapPayload } =>
+          Boolean(item.payload)
+      )
+      .sort((a, b) => (a.payload.markerMs ?? 0) - (b.payload.markerMs ?? 0));
+  }, [record?.id, record?.sessionId, transcriptions]);
 
   if (!record) {
     return (
@@ -97,14 +119,19 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <Card className="border-border">
+        <div className="space-y-6">
+          <OverlayTranscriptPreview record={record} captureDate={createdAt} />
+          <Card className="border-border">
           <CardHeader className="pb-4">
             <CardTitle className="text-2xl font-semibold">{record.title}</CardTitle>
             <CardDescription>
               Captured on {format(createdAt, "EEEE, dd MMM yyyy • h:mma")} {classInfo ? (
                 <>
                   — linked to {" "}
-                  <Link href={`/classes/${classInfo.slug}`} className="font-medium underline underline-offset-4">
+                  <Link
+                    href={`/classes/workspace?classId=${classInfo.id}`}
+                    className="font-medium underline underline-offset-4"
+                  >
                     {classInfo.code}
                   </Link>
                 </>
@@ -188,6 +215,50 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
 
             <Separator />
 
+            {!isLostRecap && relatedRecaps.length ? (
+              <>
+                <section className="space-y-3">
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                    Moments of confusion
+                  </h2>
+                  <div className="space-y-3">
+                    {relatedRecaps.map(({ entry: recap, payload }) => (
+                      <div
+                        key={recap.id}
+                        className="rounded-lg border border-border bg-muted/30 p-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-semibold text-foreground">
+                            Recap @ {formatMarkerClock(payload.markerMs)}
+                          </p>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs"
+                            onClick={() => jumpToLostMoment(payload.markerMs, record.sessionId)}
+                          >
+                            Jump
+                          </Button>
+                        </div>
+                        {payload.structured?.summary?.length ? (
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                            {payload.structured.summary.slice(0, 3).map((item, idx) => (
+                              <li key={`${recap.id}-sum-${idx}`}>{item}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Recap saved — open it from the overlay for full detail.
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+                <Separator />
+              </>
+            ) : null}
+
             <section className="space-y-3">
               <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Full transcript</h2>
               {record.content ? (
@@ -203,6 +274,8 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
             </section>
           </CardContent>
         </Card>
+
+        </div>
 
         <div className="space-y-4">
           <Card className="border-border">
@@ -254,7 +327,7 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
               {classInfo ? (
                 <div className="flex items-start justify-between gap-2">
                   <span>Linked class</span>
-                  <Link href={`/classes/${classInfo.slug}`} className="flex items-center gap-1 text-primary">
+                  <Link href={`/classes/workspace?classId=${classInfo.id}`} className="flex items-center gap-1 text-primary">
                     <MapPin className="h-3.5 w-3.5" />
                     {classInfo.code}
                   </Link>
@@ -268,6 +341,111 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
   );
 }
 
+type OverlayTranscriptPreviewProps = {
+  record: TranscriptionRecord;
+  captureDate: Date;
+};
+
+function OverlayTranscriptPreview({ record, captureDate }: OverlayTranscriptPreviewProps) {
+  const segments: TranscriptSegment[] = record.segments?.length
+    ? record.segments
+    : buildSegmentsFromText(record.fullText ?? record.content);
+  const transcriptWordCount = record.wordCount
+    ? record.wordCount
+    : segments.reduce((total, segment) => total + segment.text.split(/\s+/).filter(Boolean).length, 0);
+  const highlightFrom = Math.max(0, segments.length - 5);
+  const endedAtSource = segments.length
+    ? segments[segments.length - 1]?.endMs ?? segments[segments.length - 1]?.startMs
+    : undefined;
+  const endedAt = endedAtSource ? new Date(endedAtSource) : captureDate;
+  const endedLabel = Number.isNaN(endedAt.getTime()) ? null : format(endedAt, "MMM d, yyyy • h:mma");
+
+  return (
+    <Card className="border border-slate-800 bg-[#05060a] text-slate-100 shadow-2xl">
+      <CardHeader className="border-b border-white/5 pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.4em] text-slate-500/80">Overlay transcript</p>
+            <CardTitle className="text-xl text-white">Session preview</CardTitle>
+            <CardDescription className="text-slate-400">
+              Captured via the floating overlay{endedLabel ? ` • ${endedLabel}` : ""}
+            </CardDescription>
+          </div>
+          <div className="flex flex-col items-end gap-2 text-xs text-slate-400">
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.3em]">
+              <span
+                className={`h-2 w-2 rounded-full ${record.status === "in-progress" ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`}
+              />
+              {record.status === "in-progress" ? "Live" : "Session ended"}
+            </span>
+            <span className="text-[11px] uppercase tracking-[0.2em] text-slate-500">
+              {record.sessionId ? `Session ${record.sessionId}` : "No session link"}
+            </span>
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap gap-6 text-xs">
+          <OverlayStat label="Duration" value={formatDuration(record.durationMinutes)} />
+          <OverlayStat label="Words" value={new Intl.NumberFormat("en-US").format(transcriptWordCount)} />
+          <OverlayStat label="Segments" value={segments.length || 0} />
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-black/40 p-4 shadow-inner">
+          {segments.length ? (
+            <div className="max-h-[420px] overflow-y-auto pr-1">
+              <div className="flex flex-wrap gap-y-2 text-[0.95rem] leading-relaxed">
+                {segments.map((segment, index) => {
+                  const isRecent = index >= highlightFrom;
+                  return (
+                    <span
+                      key={segment.id ?? `${segment.text}-${index}`}
+                      className={`mr-2 inline-flex rounded-md px-2 py-1 transition ${
+                        isRecent
+                          ? "bg-indigo-500/20 text-white"
+                          : "bg-transparent text-slate-200"
+                      }`}
+                    >
+                      {segment.text}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="flex min-h-[140px] items-center justify-center text-sm text-slate-400">
+              <p>No transcript segments were synced from the overlay for this session.</p>
+            </div>
+          )}
+        </div>
+
+        <p className="text-xs text-slate-500">
+          This preview mirrors the transcript window that the overlay displayed before the capture was closed.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function OverlayStat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-[10px] uppercase tracking-[0.25em] text-slate-500">{label}</span>
+      <span className="text-base font-semibold text-white">{value}</span>
+    </div>
+  );
+}
+
+function buildSegmentsFromText(text?: string | null): TranscriptSegment[] {
+  if (!text) return [];
+  return text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => ({ id: `ft-${index}`, text: line }));
+}
+
 function formatDuration(minutes: number) {
   if (!minutes) return "—";
   const hrs = Math.floor(minutes / 60);
@@ -275,4 +453,45 @@ function formatDuration(minutes: number) {
   if (hrs === 0) return `${mins} min`;
   if (mins === 0) return `${hrs} hr${hrs > 1 ? "s" : ""}`;
   return `${hrs} hr ${mins} min`;
+}
+
+type LostRecapPayload = {
+  markerMs?: number;
+  flaggedAt?: number;
+  structured?: {
+    summary?: string[];
+    prerequisites?: string[];
+    steps?: string[];
+  };
+};
+
+function parseLostRecapContent(record: TranscriptionRecord): LostRecapPayload | null {
+  if (!record.content) return null;
+  try {
+    const parsed = JSON.parse(record.content) as LostRecapPayload & { type?: string };
+    if (parsed && (parsed.type === "lost-recap" || parsed.markerMs !== undefined)) {
+      return parsed;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function formatMarkerClock(ms?: number) {
+  if (typeof ms !== "number" || ms < 0) return "—";
+  const totalSeconds = Math.floor(ms / 1000);
+  const hrs = Math.floor(totalSeconds / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
+  if (hrs > 0) {
+    return `${hrs}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  }
+  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+}
+
+function jumpToLostMoment(markerMs?: number, sessionId?: string) {
+  if (typeof window === "undefined" || typeof markerMs !== "number") return;
+  const bus = (window as unknown as { bus?: { jumpTo?: (detail: unknown) => void } }).bus;
+  bus?.jumpTo?.({ startMs: markerMs, sessionId });
 }

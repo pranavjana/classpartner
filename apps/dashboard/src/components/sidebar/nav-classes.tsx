@@ -5,7 +5,6 @@ import { BookOpen, ChevronRight, MoreHorizontal, Pin, PinOff, Plus } from "lucid
 import Link from "next/link";
 import { useClasses } from "@/lib/classes/provider";
 import { useDashboardData } from "@/lib/dashboard/provider";
-import { getClassDashboardDetail } from "@/lib/seed/data";
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -155,8 +154,7 @@ export function NavClasses() {
             </SidebarMenuItem>
           ) : (
             pinned.map((cls) => {
-              const hasDashboard = Boolean(getClassDashboardDetail(cls.slug));
-              const href = hasDashboard ? `/classes/${cls.slug}` : `/classes/workspace?classId=${cls.id}`;
+              const href = `/classes/workspace?classId=${cls.id}`;
               return (
                 <SidebarMenuItem key={`p-${cls.id}`}>
                   <SidebarMenuButton asChild tooltip={`${cls.code} — ${cls.name}`}>
@@ -263,7 +261,7 @@ export function NavClasses() {
                             <div className="flex items-center gap-1">
                               <SidebarMenuSubButton asChild className="flex-1">
                                 <Link
-                                  href={getClassDashboardDetail(cls.slug) ? `/classes/${cls.slug}` : `/classes/workspace?classId=${cls.id}`}
+                                  href={`/classes/workspace?classId=${cls.id}`}
                                   className="flex items-center gap-2"
                                 >
                                   <span className="truncate">
@@ -322,7 +320,7 @@ export function NavClasses() {
                         <div className="flex items-center gap-1">
                           <SidebarMenuSubButton asChild className="flex-1">
                             <Link
-                              href={getClassDashboardDetail(cls.slug) ? `/classes/${cls.slug}` : `/classes/workspace?classId=${cls.id}`}
+                              href={`/classes/workspace?classId=${cls.id}`}
                               className="flex items-center gap-2"
                             >
                               <span className="truncate">
