@@ -3,16 +3,27 @@
 import * as React from "react";
 import Link from "next/link";
 import { format, parseISO } from "date-fns";
-import { ArrowLeft, BookmarkCheck, Flag, MapPin, PenLine } from "lucide-react";
+import { ArrowLeft, BookmarkCheck, Flag, MapPin, PenLine, MessageSquare, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
-import { TagInput } from "@/components/ui/tag-input";
 import { useDashboardData } from "@/lib/dashboard/provider";
-import type { TranscriptionRecord, TranscriptSegment } from "@/lib/dashboard/provider";
+import type { TranscriptionRecord } from "@/lib/dashboard/provider";
 import { useClasses } from "@/lib/classes/provider";
+
+interface QAInteraction {
+  id: string;
+  sessionId: string;
+  recordId?: string;
+  timestamp: number;
+  question: string;
+  answer: string;
+  context?: string;
+  markerMs?: number;
+  metadata?: Record<string, unknown>;
+}
 
 const STATUS_OPTIONS = [
   { value: "completed", label: "Mark as completed" },
@@ -23,21 +34,94 @@ const STATUS_OPTIONS = [
 export default function TranscriptionDetailClient({ id }: { id: string }) {
   const { transcriptions, updateTranscription } = useDashboardData();
   const { classes } = useClasses();
-  const record = transcriptions.find((tx) => tx.id === id);
+  const cachedRecord = transcriptions.find((tx) => tx.id === id);
 
+  const [record, setRecord] = React.useState<TranscriptionRecord | undefined>(cachedRecord);
   const [summary, setSummary] = React.useState(record?.summary ?? "");
-  const [tagList, setTagList] = React.useState<string[]>(record?.tags ?? []);
   const [saving, setSaving] = React.useState(false);
-  const allTags = React.useMemo(() => {
-    const tagSet = new Set<string>();
-    transcriptions.forEach((tx) => tx.tags?.forEach((tag) => tagSet.add(tag)));
-    return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
-  }, [transcriptions]);
+  const [qaInteractions, setQaInteractions] = React.useState<QAInteraction[]>([]);
+  const [loadingQA, setLoadingQA] = React.useState(true);
+  const [loadingRecord, setLoadingRecord] = React.useState(true);
 
+  // Load full transcription record with content
   React.useEffect(() => {
-    setSummary(record?.summary ?? "");
-    setTagList(record?.tags ?? []);
-  }, [record?.summary, record?.tags]);
+    async function loadFullRecord() {
+      if (!id || typeof window === 'undefined') {
+        setLoadingRecord(false);
+        return;
+      }
+
+      try {
+        const result = await window.transcriptStorage?.getTranscription(id);
+
+        if (result?.success && result.record) {
+          const fullRecord = result.record as TranscriptionRecord;
+          console.log('[TranscriptionDetail] Loaded record:', {
+            success: result.success,
+            hasContent: Boolean(fullRecord.content),
+            hasFullText: Boolean(fullRecord.fullText),
+            segmentsCount: fullRecord.segments?.length ?? 0,
+            sessionId: fullRecord.sessionId,
+          });
+
+          setRecord(fullRecord);
+          setSummary(fullRecord.summary ?? "");
+        } else {
+          console.warn('[TranscriptionDetail] Failed to load, using cached record');
+          // Fallback to cached record if bridge call fails
+          setRecord(cachedRecord);
+        }
+      } catch (error) {
+        console.error('[TranscriptionDetail] Failed to load full transcription:', error);
+        setRecord(cachedRecord);
+      } finally {
+        setLoadingRecord(false);
+      }
+    }
+
+    loadFullRecord();
+  }, [id, cachedRecord]);
+
+  // Load Q&A interactions
+  React.useEffect(() => {
+    async function loadQAInteractions() {
+      if (!record?.sessionId || typeof window === 'undefined') {
+        setLoadingQA(false);
+        return;
+      }
+
+      try {
+        const result = await window.transcriptStorage?.getQABySession(record.sessionId);
+        if (result?.success && result.interactions) {
+          setQaInteractions(result.interactions);
+        }
+      } catch (error) {
+        console.error('Failed to load Q&A interactions:', error);
+      } finally {
+        setLoadingQA(false);
+      }
+    }
+
+    loadQAInteractions();
+  }, [record?.sessionId]);
+
+  // Handle both ISO string and timestamp formats - must be before early returns
+  const createdAt = React.useMemo(() => {
+    const date = record?.createdAt || cachedRecord?.createdAt;
+    if (!date) return new Date();
+
+    // If it's a number (timestamp), convert directly
+    if (typeof date === 'number') {
+      return new Date(date);
+    }
+
+    // If it's a string, parse as ISO
+    try {
+      return parseISO(date);
+    } catch {
+      return new Date();
+    }
+  }, [record?.createdAt, cachedRecord?.createdAt]);
 
   const isLostRecap = record?.tags?.includes("lost-recap");
   const relatedRecaps = React.useMemo(() => {
@@ -60,6 +144,31 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
       .sort((a, b) => (a.payload.markerMs ?? 0) - (b.payload.markerMs ?? 0));
   }, [record?.id, record?.sessionId, transcriptions]);
 
+  const transcriptParagraphs = React.useMemo(() => {
+    if (!record) return [];
+
+    const textFromSegments = record.segments
+      ?.map((segment) => segment.text?.trim())
+      .filter(Boolean)
+      .join(" ");
+
+    const fullText = textFromSegments || record.content || record.fullText || "";
+    return splitTextIntoParagraphs(fullText, 90);
+  }, [record]);
+
+  if (loadingRecord) {
+    return (
+      <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
+        <div className="rounded-xl border border-dashed border-border bg-muted/40 p-8 text-center">
+          <h1 className="text-xl font-semibold">Loading transcription...</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Please wait while we load the full transcript and details.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!record) {
     return (
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
@@ -76,15 +185,12 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
     );
   }
 
-  const createdAt = parseISO(record.createdAt);
   const classInfo = record.classId ? classes.find((cls) => cls.id === record.classId) : undefined;
   const handleSave = async () => {
     setSaving(true);
     try {
-      const cleaned = tagList.map((tag) => tag.trim()).filter(Boolean);
       updateTranscription(record.id, {
         summary: summary.trim() || undefined,
-        tags: cleaned.length ? cleaned : undefined,
       });
     } finally {
       setSaving(false);
@@ -120,7 +226,6 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="space-y-6">
-          <OverlayTranscriptPreview record={record} captureDate={createdAt} />
           <Card className="border-border">
           <CardHeader className="pb-4">
             <CardTitle className="text-2xl font-semibold">{record.title}</CardTitle>
@@ -151,29 +256,8 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
                 value={summary}
                 onChange={(event) => setSummary(event.target.value)}
                 rows={8}
-                placeholder="Capture the key takeaways, decisions, and any follow-up tasks."
+                placeholder="AI-generated summary will appear here automatically. You can also edit or add your own notes."
               />
-            </section>
-
-            <section className="space-y-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Tags</h2>
-              <TagInput
-                value={tagList}
-                onChange={setTagList}
-                suggestions={allTags}
-                placeholder="Add a tag and press Enter…"
-              />
-              {tagList.length ? (
-                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                  {tagList.map((tag) => (
-                    <Badge key={tag} variant="secondary" className="text-xs">
-                      {tag}
-                    </Badge>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">No tags yet — add a few to help with search.</p>
-              )}
             </section>
 
             <section className="space-y-3">
@@ -214,6 +298,68 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
             </section>
 
             <Separator />
+
+            {qaInteractions.length > 0 && (
+              <>
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                      Questions & Answers ({qaInteractions.length})
+                    </h2>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Questions you asked during this transcription session
+                  </p>
+                  <div className="space-y-4">
+                    {qaInteractions.map((qa) => (
+                      <Card key={qa.id} className="border-border bg-muted/20">
+                        <CardHeader className="pb-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1">
+                              <CardTitle className="text-sm font-semibold text-foreground">
+                                Q: {qa.question}
+                              </CardTitle>
+                              <CardDescription className="mt-1 flex items-center gap-2 text-xs">
+                                <Clock className="h-3 w-3" />
+                                {qa.markerMs !== undefined ? formatMarkerClock(qa.markerMs) : format(new Date(qa.timestamp), "h:mma")}
+                              </CardDescription>
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="space-y-2">
+                          <div className="rounded-md border border-border/60 bg-background/50 p-3">
+                            <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">
+                              {qa.answer}
+                            </p>
+                          </div>
+                          {qa.metadata?.relevantSegments !== undefined && (
+                            <p className="text-xs text-muted-foreground">
+                              Based on {String(qa.metadata.relevantSegments)} relevant segments
+                            </p>
+                          )}
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                </section>
+                <Separator />
+              </>
+            )}
+
+            {loadingQA && (
+              <>
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-muted-foreground animate-pulse" />
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                      Loading Q&A history...
+                    </h2>
+                  </div>
+                </section>
+                <Separator />
+              </>
+            )}
 
             {!isLostRecap && relatedRecaps.length ? (
               <>
@@ -260,16 +406,39 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
             ) : null}
 
             <section className="space-y-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Full transcript</h2>
-              {record.content ? (
-                <div className="max-h-[420px] overflow-y-auto rounded-lg border border-border bg-muted/20 p-4 text-sm leading-relaxed text-muted-foreground">
-                  <p className="whitespace-pre-wrap">{record.content}</p>
-                </div>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Full Transcript</h2>
+              {(record.content || record.fullText || record.segments?.length) ? (
+                <Card className="border-border">
+                  <CardContent className="p-6">
+                    <div className="prose prose-sm max-w-none dark:prose-invert">
+                      <div className="max-h-[600px] overflow-y-auto pr-2 space-y-4">
+                        {transcriptParagraphs.length > 0 ? (
+                          transcriptParagraphs.map((paragraph, idx) => (
+                            <p
+                              key={`paragraph-${idx}`}
+                              className="text-sm leading-relaxed text-foreground whitespace-pre-wrap"
+                            >
+                              {paragraph}
+                            </p>
+                          ))
+                        ) : (
+                          <p className="text-sm leading-relaxed text-foreground">
+                            {record.content || record.fullText}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
               ) : (
-                <p className="text-sm text-muted-foreground">
-                  The transcript will appear here once the capture is processed. If you just finished recording, keep
-                  this page open — content usually lands within a few moments.
-                </p>
+                <div className="rounded-lg border border-dashed border-border bg-muted/40 p-8 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    The full transcript will appear here once the transcription is complete.
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    If you just finished recording, the content should appear within a few moments.
+                  </p>
+                </div>
               )}
             </section>
           </CardContent>
@@ -321,6 +490,10 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
                 <span className="font-medium">{record.segments?.length ?? 0}</span>
               </div>
               <div className="flex items-center justify-between">
+                <span>Questions asked</span>
+                <span className="font-medium">{qaInteractions.length}</span>
+              </div>
+              <div className="flex items-center justify-between">
                 <span>Captured</span>
                 <span className="font-medium">{format(createdAt, "MMM d, yyyy")}</span>
               </div>
@@ -339,111 +512,6 @@ export default function TranscriptionDetailClient({ id }: { id: string }) {
       </div>
     </div>
   );
-}
-
-type OverlayTranscriptPreviewProps = {
-  record: TranscriptionRecord;
-  captureDate: Date;
-};
-
-function OverlayTranscriptPreview({ record, captureDate }: OverlayTranscriptPreviewProps) {
-  const segments: TranscriptSegment[] = record.segments?.length
-    ? record.segments
-    : buildSegmentsFromText(record.fullText ?? record.content);
-  const transcriptWordCount = record.wordCount
-    ? record.wordCount
-    : segments.reduce((total, segment) => total + segment.text.split(/\s+/).filter(Boolean).length, 0);
-  const highlightFrom = Math.max(0, segments.length - 5);
-  const endedAtSource = segments.length
-    ? segments[segments.length - 1]?.endMs ?? segments[segments.length - 1]?.startMs
-    : undefined;
-  const endedAt = endedAtSource ? new Date(endedAtSource) : captureDate;
-  const endedLabel = Number.isNaN(endedAt.getTime()) ? null : format(endedAt, "MMM d, yyyy • h:mma");
-
-  return (
-    <Card className="border border-slate-800 bg-[#05060a] text-slate-100 shadow-2xl">
-      <CardHeader className="border-b border-white/5 pb-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.4em] text-slate-500/80">Overlay transcript</p>
-            <CardTitle className="text-xl text-white">Session preview</CardTitle>
-            <CardDescription className="text-slate-400">
-              Captured via the floating overlay{endedLabel ? ` • ${endedLabel}` : ""}
-            </CardDescription>
-          </div>
-          <div className="flex flex-col items-end gap-2 text-xs text-slate-400">
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.3em]">
-              <span
-                className={`h-2 w-2 rounded-full ${record.status === "in-progress" ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`}
-              />
-              {record.status === "in-progress" ? "Live" : "Session ended"}
-            </span>
-            <span className="text-[11px] uppercase tracking-[0.2em] text-slate-500">
-              {record.sessionId ? `Session ${record.sessionId}` : "No session link"}
-            </span>
-          </div>
-        </div>
-      </CardHeader>
-
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap gap-6 text-xs">
-          <OverlayStat label="Duration" value={formatDuration(record.durationMinutes)} />
-          <OverlayStat label="Words" value={new Intl.NumberFormat("en-US").format(transcriptWordCount)} />
-          <OverlayStat label="Segments" value={segments.length || 0} />
-        </div>
-
-        <div className="rounded-2xl border border-white/10 bg-black/40 p-4 shadow-inner">
-          {segments.length ? (
-            <div className="max-h-[420px] overflow-y-auto pr-1">
-              <div className="flex flex-wrap gap-y-2 text-[0.95rem] leading-relaxed">
-                {segments.map((segment, index) => {
-                  const isRecent = index >= highlightFrom;
-                  return (
-                    <span
-                      key={segment.id ?? `${segment.text}-${index}`}
-                      className={`mr-2 inline-flex rounded-md px-2 py-1 transition ${
-                        isRecent
-                          ? "bg-indigo-500/20 text-white"
-                          : "bg-transparent text-slate-200"
-                      }`}
-                    >
-                      {segment.text}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className="flex min-h-[140px] items-center justify-center text-sm text-slate-400">
-              <p>No transcript segments were synced from the overlay for this session.</p>
-            </div>
-          )}
-        </div>
-
-        <p className="text-xs text-slate-500">
-          This preview mirrors the transcript window that the overlay displayed before the capture was closed.
-        </p>
-      </CardContent>
-    </Card>
-  );
-}
-
-function OverlayStat({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex flex-col">
-      <span className="text-[10px] uppercase tracking-[0.25em] text-slate-500">{label}</span>
-      <span className="text-base font-semibold text-white">{value}</span>
-    </div>
-  );
-}
-
-function buildSegmentsFromText(text?: string | null): TranscriptSegment[] {
-  if (!text) return [];
-  return text
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => ({ id: `ft-${index}`, text: line }));
 }
 
 function formatDuration(minutes: number) {
@@ -494,4 +562,27 @@ function jumpToLostMoment(markerMs?: number, sessionId?: string) {
   if (typeof window === "undefined" || typeof markerMs !== "number") return;
   const bus = (window as unknown as { bus?: { jumpTo?: (detail: unknown) => void } }).bus;
   bus?.jumpTo?.({ startMs: markerMs, sessionId });
+}
+
+function splitTextIntoParagraphs(text: string, wordsPerParagraph: number): string[] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+
+  const words = cleaned.split(" ");
+  const paragraphs: string[] = [];
+  let current: string[] = [];
+
+  for (const word of words) {
+    current.push(word);
+    if (current.length >= wordsPerParagraph) {
+      paragraphs.push(current.join(" "));
+      current = [];
+    }
+  }
+
+  if (current.length) {
+    paragraphs.push(current.join(" "));
+  }
+
+  return paragraphs;
 }

@@ -142,7 +142,7 @@ export default function ClassWorkspaceClient() {
 
   if (!ready) {
     return (
-      <div className="flex flex-1 items-center justify-center p-10 text-sm text-muted-foreground">
+      <div className="flex flex-1 items-center justify-center p-4 pt-0 text-sm text-muted-foreground">
         Loading class workspace…
       </div>
     );
@@ -175,7 +175,7 @@ export default function ClassWorkspaceClient() {
 
   if (!derivedDetail) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-sm text-muted-foreground">
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-4 pt-0 text-sm text-muted-foreground">
         <p>That class is not available yet.</p>
         <button
           type="button"
@@ -214,7 +214,7 @@ function ClassWorkspaceLanding({
   const hasArchived = archivedClasses.length > 0;
 
   return (
-    <div className="flex flex-1 flex-col gap-10 overflow-y-auto p-8">
+    <div className="flex flex-1 flex-col gap-10 overflow-y-auto p-4 pt-0">
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold">Classes workspace</h1>
         <p className="text-sm text-muted-foreground">
@@ -353,7 +353,7 @@ function ArchivedClassNotice({ classItem, onRestore, restoring, error }: Archive
       : classItem.name;
 
   return (
-    <div className="flex flex-1 items-center justify-center p-10">
+    <div className="flex flex-1 items-center justify-center p-4 pt-0">
       <Card className="max-w-md border-border/70">
         <CardHeader className="space-y-2 text-center">
           <CardTitle>{label}</CardTitle>

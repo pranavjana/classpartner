@@ -108,6 +108,25 @@ class TranscriptStorage {
         ON class_context_segments(classId, orderIndex);
       CREATE INDEX IF NOT EXISTS idx_context_segments_source
         ON class_context_segments(sourceId, orderIndex);
+
+      CREATE TABLE IF NOT EXISTS qa_interactions (
+        id TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        recordId TEXT,
+        timestamp INTEGER NOT NULL,
+        question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        context TEXT,
+        markerMs INTEGER,
+        metadata TEXT,
+        FOREIGN KEY(sessionId) REFERENCES sessions(id),
+        FOREIGN KEY(recordId) REFERENCES transcription_records(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_qa_session
+        ON qa_interactions(sessionId, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_qa_record
+        ON qa_interactions(recordId, timestamp DESC);
     `);
   }
 
@@ -720,6 +739,19 @@ Words: ${session.wordCount || 0}
 
   // ----- Transcription record management -----
   upsertTranscriptionRecord(record) {
+    // Auto-populate content from segments if missing but sessionId exists
+    let content = record.content || record.fullText || null;
+    if (!content && record.sessionId) {
+      try {
+        const segments = this.getSegmentsBySession(record.sessionId);
+        if (segments && segments.length > 0) {
+          content = segments.map(s => s.text).join(' ');
+        }
+      } catch (error) {
+        console.warn('[TranscriptStorage] Failed to auto-populate content from segments:', error);
+      }
+    }
+
     const payload = {
       id: record.id,
       sessionId: record.sessionId || null,
@@ -732,7 +764,7 @@ Words: ${session.wordCount || 0}
       summary: record.summary || null,
       keyPoints: record.keyPoints ? JSON.stringify(record.keyPoints) : null,
       actionItems: record.actionItems ? JSON.stringify(record.actionItems) : null,
-      content: record.content || record.fullText || null,
+      content: content,
       tags: record.tags ? JSON.stringify(record.tags) : null,
       flagged: record.flagged ? 1 : 0,
     };
@@ -786,6 +818,72 @@ Words: ${session.wordCount || 0}
     this.db.prepare(`DELETE FROM transcription_records WHERE id = ?`).run(id);
   }
 
+  // Backfill content for existing records that have sessionId but no content
+  backfillTranscriptionContent() {
+    // First, try to link records without sessionId to sessions
+    this.linkOrphanedRecords();
+
+    // Then backfill content
+    const records = this.db.prepare(
+      `SELECT id, sessionId FROM transcription_records
+       WHERE sessionId IS NOT NULL AND (content IS NULL OR content = '')`
+    ).all();
+
+    let updated = 0;
+    for (const row of records) {
+      try {
+        const segments = this.getSegmentsBySession(row.sessionId);
+        if (segments && segments.length > 0) {
+          const content = segments.map(s => s.text).join(' ');
+          this.db.prepare(
+            `UPDATE transcription_records SET content = ? WHERE id = ?`
+          ).run(content, row.id);
+          updated++;
+        }
+      } catch (error) {
+        console.warn(`[TranscriptStorage] Failed to backfill content for record ${row.id}:`, error);
+      }
+    }
+
+    console.log(`[TranscriptStorage] Backfilled content for ${updated} transcription records`);
+    return updated;
+  }
+
+  // Link records without sessionId to appropriate sessions based on timing
+  linkOrphanedRecords() {
+    const orphanedRecords = this.db.prepare(
+      `SELECT id, createdAt, title FROM transcription_records
+       WHERE sessionId IS NULL OR sessionId = ''`
+    ).all();
+
+    let linked = 0;
+    for (const record of orphanedRecords) {
+      try {
+        // Find a session around the same time (within 10 minutes)
+        const recordTime = typeof record.createdAt === 'number' ? record.createdAt : new Date(record.createdAt).getTime();
+        const sessions = this.db.prepare(
+          `SELECT id, startTime FROM sessions
+           WHERE startTime BETWEEN ? AND ?
+           ORDER BY startTime DESC LIMIT 1`
+        ).all(recordTime - 600000, recordTime + 600000); // 10 minutes before/after
+
+        if (sessions.length > 0) {
+          const session = sessions[0];
+          this.db.prepare(
+            `UPDATE transcription_records SET sessionId = ? WHERE id = ?`
+          ).run(session.id, record.id);
+          console.log(`[TranscriptStorage] Linked record ${record.id} to session ${session.id}`);
+          linked++;
+        }
+      } catch (error) {
+        console.warn(`[TranscriptStorage] Failed to link record ${record.id}:`, error);
+      }
+    }
+
+    console.log(`[TranscriptStorage] Linked ${linked} orphaned records to sessions`);
+    return linked;
+  }
+
   // ----- Helpers -----
   mapClass(row) {
     const metadata =
@@ -809,7 +907,7 @@ Words: ${session.wordCount || 0}
       sessionId: row.sessionId || undefined,
       classId: row.classId || undefined,
       title: row.title,
-      createdAt: row.createdAt,
+      createdAt: typeof row.createdAt === 'number' ? new Date(row.createdAt).toISOString() : row.createdAt,
       durationMinutes: row.durationMinutes ?? 0,
       wordCount: row.wordCount ?? 0,
       status: row.status,
@@ -840,6 +938,59 @@ Words: ${session.wordCount || 0}
         typeof row.segmentTime === 'number'
           ? row.segmentTime
           : startMs ?? ts,
+    };
+  }
+
+  // ----- Q&A Interactions -----
+  saveQAInteraction(interaction) {
+    const payload = {
+      id: interaction.id || `qa_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      sessionId: interaction.sessionId,
+      recordId: interaction.recordId || null,
+      timestamp: interaction.timestamp || Date.now(),
+      question: interaction.question,
+      answer: interaction.answer,
+      context: interaction.context || null,
+      markerMs: interaction.markerMs || null,
+      metadata: interaction.metadata ? JSON.stringify(interaction.metadata) : null,
+    };
+
+    this.db
+      .prepare(
+        `INSERT INTO qa_interactions
+         (id, sessionId, recordId, timestamp, question, answer, context, markerMs, metadata)
+         VALUES (@id, @sessionId, @recordId, @timestamp, @question, @answer, @context, @markerMs, @metadata)`
+      )
+      .run(payload);
+
+    return payload;
+  }
+
+  getQAInteractionsBySession(sessionId) {
+    const rows = this.db
+      .prepare(`SELECT * FROM qa_interactions WHERE sessionId = ? ORDER BY timestamp ASC`)
+      .all(sessionId);
+    return rows.map((row) => this.mapQAInteraction(row));
+  }
+
+  getQAInteractionsByRecord(recordId) {
+    const rows = this.db
+      .prepare(`SELECT * FROM qa_interactions WHERE recordId = ? ORDER BY timestamp ASC`)
+      .all(recordId);
+    return rows.map((row) => this.mapQAInteraction(row));
+  }
+
+  mapQAInteraction(row) {
+    return {
+      id: row.id,
+      sessionId: row.sessionId,
+      recordId: row.recordId || undefined,
+      timestamp: row.timestamp,
+      question: row.question,
+      answer: row.answer,
+      context: row.context || undefined,
+      markerMs: row.markerMs || undefined,
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
     };
   }
 

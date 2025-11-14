@@ -1,5 +1,17 @@
 type UnknownRecord = Record<string, unknown>;
 
+interface QAInteraction {
+  id: string;
+  sessionId: string;
+  recordId?: string;
+  timestamp: number;
+  question: string;
+  answer: string;
+  context?: string;
+  markerMs?: number;
+  metadata?: UnknownRecord;
+}
+
 interface TranscriptionStorageBridge {
   getCurrentSession: () => Promise<{ sessionId: string | null; classId?: string | null; recordId?: string | null; startedAt?: number | null }>;
   getFullTranscript: (sessionId: string) => Promise<{ success: boolean; transcript?: string; session?: UnknownRecord; error?: string }>;
@@ -15,6 +27,8 @@ interface TranscriptionStorageBridge {
   saveTranscription: (payload: UnknownRecord) => Promise<{ success: boolean; record?: UnknownRecord; error?: string }>;
   getTranscription: (id: string) => Promise<{ success: boolean; record?: UnknownRecord; error?: string }>;
   deleteTranscription: (id: string) => Promise<{ success: boolean; error?: string }>;
+  getQABySession: (sessionId: string) => Promise<{ success: boolean; interactions?: QAInteraction[]; error?: string }>;
+  getQAByRecord: (recordId: string) => Promise<{ success: boolean; interactions?: QAInteraction[]; error?: string }>;
 }
 
 interface ModelContextBridge {

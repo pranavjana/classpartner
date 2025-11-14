@@ -310,6 +310,12 @@ function createOverlayWindow() {
 function ensureTranscriptStorage() {
   if (!transcriptStorage) {
     transcriptStorage = new TranscriptStorage();
+    // Backfill content for existing records on first initialization
+    try {
+      transcriptStorage.backfillTranscriptionContent();
+    } catch (error) {
+      console.error('[TranscriptStorage] Failed to backfill content:', error);
+    }
   }
   return transcriptStorage;
 }
@@ -675,7 +681,34 @@ function setupIpcHandlers() {
   ipcMain.handle('ai:force-backup', () => { aiPipeline?.worker?.postMessage?.({ type: 'debug:forceBackup' }); });
   ipcMain.handle('ai:query', async (_evt, { query, opts }) => {
     if (!aiPipeline) return { success: false, error: 'AI pipeline not ready' };
-    try { const result = await aiPipeline.query(query, opts); return { success: true, ...result }; }
+    try {
+      const result = await aiPipeline.query(query, opts);
+
+      // Save Q&A interaction to database
+      if (result.answer && currentSessionId) {
+        try {
+          ensureTranscriptStorage();
+          const qaInteraction = {
+            sessionId: currentSessionId,
+            recordId: currentSessionMeta?.recordId || null,
+            question: query,
+            answer: result.answer,
+            context: result.context || null,
+            markerMs: Date.now() - (currentSessionStartedAt || Date.now()),
+            metadata: {
+              relevantSegments: result.relevantSegments?.length || 0,
+              contextUsed: Boolean(result.context)
+            }
+          };
+          transcriptStorage.saveQAInteraction(qaInteraction);
+          console.log('[AI QUERY] Saved Q&A interaction for session:', currentSessionId);
+        } catch (saveError) {
+          console.error('[AI QUERY] Failed to save Q&A interaction:', saveError);
+        }
+      }
+
+      return { success: true, ...result };
+    }
     catch (e) { return { success: false, error: String(e?.message ?? e) }; }
   });
 
@@ -968,15 +1001,44 @@ function setupIpcHandlers() {
       ensureTranscriptStorage();
       const record = transcriptStorage.getTranscriptionRecord(id);
       if (!record) return { success: false, error: 'Not found' };
-      if (record.sessionId && !record.content) {
-        try {
-          const transcript = transcriptStorage.getFullTranscript(record.sessionId, true);
-          record.content = transcript;
-          record.fullText = transcript;
-        } catch (error) {
-          console.warn('[TranscriptStorage] Failed to hydrate full transcript for', id, error);
+
+      console.log('[IPC] Loading transcription:', {
+        id,
+        sessionId: record.sessionId,
+        hasContent: Boolean(record.content),
+        contentLength: record.content?.length ?? 0,
+      });
+
+      // Hydrate full transcript and segments if sessionId exists
+      if (record.sessionId) {
+        if (!record.content) {
+          try {
+            const transcript = transcriptStorage.getFullTranscript(record.sessionId, false);
+            console.log('[IPC] Hydrated transcript, length:', transcript?.length ?? 0);
+            record.content = transcript;
+            record.fullText = transcript;
+          } catch (error) {
+            console.warn('[TranscriptStorage] Failed to hydrate full transcript for', id, error);
+          }
         }
+
+        // Also include segments
+        try {
+          const segments = transcriptStorage.getSegmentsBySession(record.sessionId);
+          console.log('[IPC] Loaded segments:', segments.length);
+          record.segments = segments.map(seg => ({
+            id: seg.id,
+            text: seg.text,
+            startMs: seg.startMs,
+            endMs: seg.endMs,
+          }));
+        } catch (error) {
+          console.warn('[TranscriptStorage] Failed to load segments for', id, error);
+        }
+      } else {
+        console.warn('[IPC] No sessionId for record', id);
       }
+
       return { success: true, record };
     } catch (e) {
       return { success: false, error: String(e?.message ?? e) };
@@ -989,6 +1051,44 @@ function setupIpcHandlers() {
       ensureTranscriptStorage();
       transcriptStorage.deleteTranscriptionRecord(id);
       return { success: true };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:qa:get-by-session', (_evt, sessionId) => {
+    try {
+      if (!sessionId) return { success: false, error: 'sessionId is required' };
+      ensureTranscriptStorage();
+      const interactions = transcriptStorage.getQAInteractionsBySession(sessionId);
+      return { success: true, interactions };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle('storage:qa:get-by-record', (_evt, recordId) => {
+    try {
+      if (!recordId) return { success: false, error: 'recordId is required' };
+      ensureTranscriptStorage();
+      const interactions = transcriptStorage.getQAInteractionsByRecord(recordId);
+      return { success: true, interactions };
+    } catch (e) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  // Diagnostic: Check segments for a session
+  ipcMain.handle('storage:debug:segments', (_evt, sessionId) => {
+    try {
+      if (!sessionId) return { success: false, error: 'sessionId is required' };
+      ensureTranscriptStorage();
+      const segments = transcriptStorage.getSegmentsBySession(sessionId);
+      return {
+        success: true,
+        count: segments.length,
+        firstFew: segments.slice(0, 3).map(s => ({ text: s.text, startMs: s.startMs }))
+      };
     } catch (e) {
       return { success: false, error: String(e?.message ?? e) };
     }

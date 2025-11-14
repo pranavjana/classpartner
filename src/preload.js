@@ -183,6 +183,8 @@ contextBridge.exposeInMainWorld("transcriptStorage", {
   saveTranscription: (payload) => ipcRenderer.invoke("storage:transcriptions:save", payload),
   getTranscription: (id) => ipcRenderer.invoke("storage:transcriptions:get", id),
   deleteTranscription: (id) => ipcRenderer.invoke("storage:transcriptions:delete", id),
+  getQABySession: (sessionId) => ipcRenderer.invoke("storage:qa:get-by-session", sessionId),
+  getQAByRecord: (recordId) => ipcRenderer.invoke("storage:qa:get-by-record", recordId),
 });
 
 contextBridge.exposeInMainWorld("transcriptionEvents", {
