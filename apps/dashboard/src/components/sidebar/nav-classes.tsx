@@ -134,7 +134,7 @@ export function NavClasses() {
   return (
     <>
       {/* Pinned */}
-      <SidebarGroup>
+      <SidebarGroup className="group-data-[collapsible=icon]:pt-0">
         <div className="flex items-center justify-between pr-2">
           <SidebarGroupLabel>Pinned</SidebarGroupLabel>
         </div>
@@ -174,7 +174,7 @@ export function NavClasses() {
       </SidebarGroup>
 
       {/* Classes */}
-      <SidebarGroup>
+      <SidebarGroup className="group-data-[collapsible=icon]:pt-0">
         <div className="flex items-center justify-between pr-2">
           <SidebarGroupLabel>Classes</SidebarGroupLabel>
           <Dialog open={addOpen} onOpenChange={setAddOpen}>

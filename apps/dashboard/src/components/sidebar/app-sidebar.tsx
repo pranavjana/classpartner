@@ -4,7 +4,6 @@ import * as React from "react";
 import { usePathname } from "next/navigation";
 import { Banana, Calendar, House, BookOpen, Settings2, Utensils } from "lucide-react";
 import { NavMain, type NavItem } from "@/components/sidebar/nav-main";
-import { NavUser } from "@/components/sidebar/nav-user";
 import {
   Sidebar,
   SidebarContent,
@@ -38,11 +37,6 @@ const NAV_MAIN_CONFIG: NavItemConfig[] = [
   },
 ];
 
-const data = {
-  user: { name: "shadcn", email: "m@example.com", avatar: "/avatars/shadcn.jpg" },
-  teams: [{ name: "Classpartner", logo: Banana }],
-};
-
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
   const navMainItems = React.useMemo(() => annotateNavItems(NAV_MAIN_CONFIG, pathname), [pathname]);
@@ -52,11 +46,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" tooltip="Classpartner" className="group-data-[collapsible=icon]:justify-center">
+            <SidebarMenuButton size="lg" tooltip="Classpartner" className="data-[size=lg]:group-data-[collapsible=icon]:justify-center data-[size=lg]:group-data-[collapsible=icon]:!p-0">
               <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
                 <Utensils className="size-4" />
               </div>
-              <div className="grid flex-1 text-left text-sm leading-tight">
+              <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
                 <span className="truncate font-semibold">Classpartner</span>
                 <span className="truncate text-xs text-muted-foreground">Education</span>
               </div>
@@ -80,7 +74,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarContent>
 
       <SidebarFooter>
-        <NavUser user={data.user} />
       </SidebarFooter>
     </Sidebar>
   );

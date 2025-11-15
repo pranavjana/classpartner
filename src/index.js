@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const Store = require('electron-store');
 require('dotenv').config();
 
-const DeepgramService = require('../src/services/deepGram.js');        // ⬅ adjust if your services/ live elsewhere
+const DeepgramService = require('../src/services/deepgram.js');        // ⬅ adjust if your services/ live elsewhere
 const { AIPipeline } = require('../src/services/ai/pipeline');          // ⬅ adjust if needed
 const TranscriptStorage = require('../src/services/transcriptStorage'); // NEW: SQLite storage
 

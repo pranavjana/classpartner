@@ -9,7 +9,11 @@ module.exports = {
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
-      config: {},
+      config: {
+        name: 'classroom_assistant',
+        setupIcon: './build/icon.ico', // Optional: add your icon here
+        loadingGif: './build/install.gif', // Optional: add loading animation
+      },
     },
     {
       name: '@electron-forge/maker-zip',
