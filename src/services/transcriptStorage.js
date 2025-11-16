@@ -714,10 +714,26 @@ Words: ${session.wordCount || 0}
 
   deleteClass(classId) {
     const trx = this.db.transaction((id) => {
+      // First, delete qa_interactions that reference transcription_records in this class
+      this.db.prepare(`
+        DELETE FROM qa_interactions
+        WHERE recordId IN (SELECT id FROM transcription_records WHERE classId = ?)
+      `).run(id);
+
+      // Delete transcription_records for this class
       this.db.prepare(`DELETE FROM transcription_records WHERE classId = ?`).run(id);
+
+      // Delete class context segments
+      this.db.prepare(`DELETE FROM class_context_segments WHERE classId = ?`).run(id);
+
+      // Delete class context sources
+      this.db.prepare(`DELETE FROM class_context_sources WHERE classId = ?`).run(id);
+
+      // Finally delete the class itself
       this.db.prepare(`DELETE FROM classes WHERE id = ?`).run(id);
     });
     trx(classId);
+    console.log('[TranscriptStorage] Deleted class and all related data:', classId);
   }
 
   archiveClass(classId, archived = true) {
@@ -815,7 +831,14 @@ Words: ${session.wordCount || 0}
   }
 
   deleteTranscriptionRecord(id) {
-    this.db.prepare(`DELETE FROM transcription_records WHERE id = ?`).run(id);
+    const trx = this.db.transaction((recordId) => {
+      // First delete qa_interactions that reference this transcription
+      this.db.prepare(`DELETE FROM qa_interactions WHERE recordId = ?`).run(recordId);
+      // Then delete the transcription record itself
+      this.db.prepare(`DELETE FROM transcription_records WHERE id = ?`).run(recordId);
+    });
+    trx(id);
+    console.log('[TranscriptStorage] Deleted transcription record and related QA interactions:', id);
   }
 
   // Backfill content for existing records that have sessionId but no content

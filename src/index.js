@@ -4,13 +4,36 @@ const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const Store = require('electron-store');
-require('dotenv').config();
+const dotenv = require('dotenv');
+
+// Note: .env will be loaded in app.whenReady() to ensure proper path resolution
 
 const DeepgramService = require('../src/services/deepgram.js');        // ⬅ adjust if your services/ live elsewhere
 const { AIPipeline } = require('../src/services/ai/pipeline');          // ⬅ adjust if needed
 const TranscriptStorage = require('../src/services/transcriptStorage'); // NEW: SQLite storage
+const ProxyServer = require('./proxy/server.js');                        // NEW: Proxy server for API key protection
 
 const store = new Store();
+let proxyServer = null;  // NEW: Proxy server instance
+
+// Helper: Load .env from correct location (must be called after app is ready)
+function loadEnv() {
+  if (app.isPackaged) {
+    const envPath = path.join(process.resourcesPath, '.env');
+    console.log('[ENV] Loading from production path:', envPath);
+    const result = dotenv.config({ path: envPath });
+    if (result.error) {
+      console.error('[ENV] Failed to load .env:', result.error);
+    } else {
+      console.log('[ENV] Successfully loaded .env');
+      console.log('[ENV] DEEPGRAM_API_KEY:', process.env.DEEPGRAM_API_KEY ? 'SET' : 'NOT SET');
+    }
+  } else {
+    console.log('[ENV] Loading from project root (development)');
+    dotenv.config();
+    console.log('[ENV] DEEPGRAM_API_KEY:', process.env.DEEPGRAM_API_KEY ? 'SET' : 'NOT SET');
+  }
+}
 
 function getTransparencyPercent() {
   const general = store.get('generalSettings') || {};
@@ -628,7 +651,12 @@ function setupIpcHandlers() {
   ipcMain.handle('start-transcription', async (_event, metadata = {}) => {
     try {
       const apiKey = process.env.DEEPGRAM_API_KEY;
-      if (!apiKey) return { success: false, error: 'Deepgram API key not found. Add DEEPGRAM_API_KEY to .env' };
+      if (!apiKey) {
+        console.error('[TRANSCRIPTION] DEEPGRAM_API_KEY not found in environment');
+        console.log('[TRANSCRIPTION] app.isPackaged:', app.isPackaged);
+        console.log('[TRANSCRIPTION] process.resourcesPath:', process.resourcesPath);
+        return { success: false, error: 'Deepgram API key not found. Check console logs for .env loading status.' };
+      }
 
       if (!deepgramService) { deepgramService = new DeepgramService(apiKey); setupDeepgramEventHandlers(); }
       ensureTranscriptStorage(); // NEW: Initialize storage
@@ -660,6 +688,33 @@ function setupIpcHandlers() {
 
       await deepgramService.connect();
       console.log('[MAIN] Transcription started with session:', currentSessionId);
+
+      // Link the sessionId to the transcription record immediately
+      if (recordId && transcriptStorage) {
+        try {
+          const existingRecord = transcriptStorage.getTranscriptionRecord(recordId);
+          if (existingRecord) {
+            transcriptStorage.upsertTranscriptionRecord({
+              ...existingRecord,
+              sessionId: currentSessionId,
+            });
+            console.log('[MAIN] Linked session', currentSessionId, 'to record', recordId);
+          } else {
+            // Create a minimal record if it doesn't exist
+            transcriptStorage.upsertTranscriptionRecord({
+              id: recordId,
+              sessionId: currentSessionId,
+              classId: classId ?? null,
+              title: metadata?.title || `Session ${currentSessionId}`,
+              createdAt: nowTs,
+              status: 'in-progress',
+            });
+            console.log('[MAIN] Created record', recordId, 'with session', currentSessionId);
+          }
+        } catch (linkError) {
+          console.error('[MAIN] Failed to link session to record:', linkError);
+        }
+      }
 
       return { success: true, message: 'Transcription started', sessionId: currentSessionId };
     } catch (error) {
@@ -995,12 +1050,16 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle('storage:classes:delete', (_evt, classId) => {
+    console.log('[IPC] storage:classes:delete called with:', classId);
     try {
       if (!classId) return { success: false, error: 'classId is required' };
       ensureTranscriptStorage();
+      console.log('[IPC] Calling transcriptStorage.deleteClass...');
       transcriptStorage.deleteClass(classId);
+      console.log('[IPC] Class deleted successfully');
       return { success: true };
     } catch (e) {
+      console.error('[IPC] storage:classes:delete error:', e);
       return { success: false, error: String(e?.message ?? e) };
     }
   });
@@ -1093,12 +1152,16 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle('storage:transcriptions:delete', (_evt, id) => {
+    console.log('[IPC] storage:transcriptions:delete called with:', id);
     try {
       if (!id) return { success: false, error: 'id is required' };
       ensureTranscriptStorage();
+      console.log('[IPC] Calling transcriptStorage.deleteTranscriptionRecord...');
       transcriptStorage.deleteTranscriptionRecord(id);
+      console.log('[IPC] Transcription deleted successfully');
       return { success: true };
     } catch (e) {
+      console.error('[IPC] storage:transcriptions:delete error:', e);
       return { success: false, error: String(e?.message ?? e) };
     }
   });
@@ -1308,7 +1371,27 @@ function setupIpcHandlers() {
 }
 
 // ---------- app lifecycle
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // IMPORTANT: Load .env first before using any environment variables
+  loadEnv();
+
+  // NEW: Start proxy server for API key protection
+  try {
+    proxyServer = new ProxyServer({
+      port: 3500,
+      deepgramKey: process.env.DEEPGRAM_API_KEY,
+      openaiKey: process.env.OPENAI_API_KEY,
+      geminiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+      openrouterKey: process.env.OPENROUTER_API_KEY,
+      openrouterModel: process.env.OPENROUTER_MODEL,
+      geminiModel: process.env.GEMINI_MODEL,
+    });
+    await proxyServer.start();
+    console.log('[MAIN] Proxy server started on port', proxyServer.getPort());
+  } catch (err) {
+    console.error('[MAIN] Failed to start proxy server:', err);
+  }
+
   // Set dock icon on macOS
   if (process.platform === 'darwin' && app.dock) {
     try {
@@ -1408,4 +1491,5 @@ app.on('will-quit', () => {
   deepgramService?.destroy(); deepgramService = null;
   aiPipeline?.dispose(); aiPipeline = null;
   transcriptStorage?.close(); transcriptStorage = null; // NEW: Close database
+  proxyServer?.stop(); proxyServer = null; // NEW: Stop proxy server
 });

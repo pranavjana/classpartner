@@ -129,7 +129,13 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
 
       if (useBridge && bridge) {
         try {
-          if (storedTranscriptions?.length) {
+          // One-time migration: if localStorage has transcriptions with content, save them to SQLite
+          // This ensures content is not lost when transitioning to SQLite as source of truth
+          const migrationKey = "cp_transcription_migration_done";
+          const migrationDone = localStorage.getItem(migrationKey) === "true";
+
+          if (!migrationDone && storedTranscriptions?.length) {
+            console.log("[DashboardDataProvider] Migrating", storedTranscriptions.length, "transcriptions to SQLite...");
             await Promise.all(
               storedTranscriptions.map((record) =>
                 bridge
@@ -137,6 +143,11 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
                   .catch((error) => console.error("[DashboardDataProvider] Failed to migrate transcription", error))
               )
             );
+            localStorage.setItem(migrationKey, "true");
+            localStorage.removeItem(DASHBOARD_TRANSCRIPTS_KEY);
+            console.log("[DashboardDataProvider] Migration complete");
+          } else if (storedTranscriptions?.length) {
+            // Migration already done, just clear old localStorage data
             localStorage.removeItem(DASHBOARD_TRANSCRIPTS_KEY);
           }
 
@@ -345,12 +356,21 @@ export function DashboardDataProvider({ children }: { children: React.ReactNode 
 
   const deleteTranscription = React.useCallback(
     (id: string) => {
+      console.log("[DashboardDataProvider] deleteTranscription called with id:", id);
+      console.log("[DashboardDataProvider] useBridge:", useBridge, "bridge:", !!bridge);
+
       setTranscriptions((prev) => prev.filter((tx) => tx.id !== id));
       setActiveRecordIdState((prev) => (prev === id ? null : prev));
       if (useBridge && bridge) {
+        console.log("[DashboardDataProvider] Calling bridge.deleteTranscription...");
         bridge
           .deleteTranscription(id)
+          .then((response) => {
+            console.log("[DashboardDataProvider] bridge.deleteTranscription response:", response);
+          })
           .catch((error) => console.error("[DashboardDataProvider] Failed to delete transcription", error));
+      } else {
+        console.warn("[DashboardDataProvider] No bridge available, only updating local state");
       }
     },
     [bridge, useBridge]

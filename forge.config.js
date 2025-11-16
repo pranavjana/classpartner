@@ -5,6 +5,7 @@ module.exports = {
   packagerConfig: {
     asar: true,
     icon: './assets/asxlx-l1ant',
+    extraResource: ['.env'],
   },
   rebuildConfig: {},
   makers: [

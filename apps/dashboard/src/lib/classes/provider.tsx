@@ -63,7 +63,13 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
 
       if (useBridge && bridge) {
         try {
-          if (storedClasses?.length) {
+          // One-time migration: if localStorage has classes, save them to SQLite
+          // This ensures data is not lost when transitioning to SQLite as source of truth
+          const migrationKey = "cp_classes_migration_done";
+          const migrationDone = localStorage.getItem(migrationKey) === "true";
+
+          if (!migrationDone && storedClasses?.length) {
+            console.log("[ClassesProvider] Migrating", storedClasses.length, "classes to SQLite...");
             await Promise.all(
               storedClasses.map((item) =>
                 bridge.saveClass(classItemToBridgePayload(item)).catch((error) => {
@@ -71,14 +77,22 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
                 })
               )
             );
+            localStorage.setItem(migrationKey, "true");
+            localStorage.removeItem(LS_CLASSES);
+            console.log("[ClassesProvider] Migration complete");
+          } else if (storedClasses?.length) {
+            // Migration already done, just clear old localStorage data
             localStorage.removeItem(LS_CLASSES);
           }
 
+          console.log("[ClassesProvider] Fetching classes from SQLite...");
           const response = await bridge.listClasses();
+          console.log("[ClassesProvider] listClasses response:", response);
           let items: ClassItem[] =
             response?.success && Array.isArray(response.classes)
               ? response.classes.map(mapBridgeClassRecord)
               : [];
+          console.log("[ClassesProvider] Loaded", items.length, "classes from database");
 
           if (items.length === 0 && seed.length) {
             await Promise.all(
@@ -145,18 +159,23 @@ export function ClassesProvider({ children, seed = [] }: ClassesProviderProps) {
 
 const addClass = React.useCallback(
     (item: ClassItem) => {
+      console.log("[ClassesProvider] addClass called:", item);
       const nextItem: ClassItem = { ...item, archived: Boolean(item.archived) };
       setAllClasses((prev) => [...prev, nextItem]);
       if (useBridge && bridge) {
+        console.log("[ClassesProvider] Saving class to SQLite...");
         bridge
           .saveClass(classItemToBridgePayload(nextItem))
           .then((res) => {
+            console.log("[ClassesProvider] saveClass response:", res);
             if (res?.success && res.class) {
               const mapped = mapBridgeClassRecord(res.class);
               setAllClasses((prev) => prev.map((cls) => (cls.id === mapped.id ? mapped : cls)));
             }
           })
           .catch((error) => console.error("[ClassesProvider] Failed to save class:", error));
+      } else {
+        console.warn("[ClassesProvider] No bridge available, class not saved to database");
       }
     },
     [bridge, useBridge]
@@ -195,19 +214,29 @@ const addClass = React.useCallback(
 
   const deleteClass = React.useCallback(
     async (id: string): Promise<{ success: boolean; error?: string }> => {
+      console.log("[ClassesProvider] deleteClass called with id:", id);
+      console.log("[ClassesProvider] useBridge:", useBridge, "bridge:", !!bridge);
+
       if (useBridge && bridge) {
         try {
+          console.log("[ClassesProvider] Calling bridge.deleteClass...");
           const response = await bridge.deleteClass(id);
+          console.log("[ClassesProvider] bridge.deleteClass response:", response);
           if (!response?.success) {
             const message = response?.error ?? "Failed to delete class";
+            console.error("[ClassesProvider] Delete failed:", message);
             return { success: false, error: message };
           }
+          console.log("[ClassesProvider] Delete successful in database");
         } catch (error) {
           console.error("[ClassesProvider] Failed to delete class:", error);
           return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
+      } else {
+        console.warn("[ClassesProvider] No bridge available, only updating local state");
       }
 
+      console.log("[ClassesProvider] Updating local state to remove class", id);
       setAllClasses((prev) => prev.filter((c) => c.id !== id));
       setPinnedIds((prev) => prev.filter((pid) => pid !== id));
       return { success: true };
