@@ -126,7 +126,7 @@ contextBridge.exposeInMainWorld("ai", {
   onLog: (cb) => on("ai:log", (_e, p) => cb(p)),
   availability: () => ipcRenderer.invoke("get-ai-availability"),
   ask: (query, opts) => ipcRenderer.invoke("ai:query", { query, opts }),
-  selftest: () => ipcRenderer.invoke("ai:selftest"),
+  selftest: (segments) => ipcRenderer.invoke("ai:selftest", { segments }),
   lostRecap: (payload) => ipcRenderer.invoke("ai:lost-recap", payload),
 });
 

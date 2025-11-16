@@ -133,16 +133,16 @@ window.ai.onLog(m => console.log('[ai log]', m));
 window.ai.onError(e => console.log('[ai error]', e));
 window.ai.onUpdate(p => console.log('[ai update]', p));
 
-// 2) Seed a couple of "final" lines without talking:
+// 2) Seed a couple of "final" lines without talking (supply your own text):
 window.bus.sendFinal({
   id: 's1',
-  text: 'The lecturer outlined the project milestones and safety checks for next week.',
+  text: '<replace with your transcript snippet>',
   startMs: Date.now() - 4000,
   endMs: Date.now() - 2000,
 });
 window.bus.sendFinal({
   id: 's2',
-  text: 'They also reviewed the uploaded briefing and clarified expectations for the midterm summary.',
+  text: '<replace with another snippet>',
   startMs: Date.now() - 2000,
   endMs: Date.now(),
 });
