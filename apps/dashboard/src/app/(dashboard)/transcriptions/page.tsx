@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { format, formatDistanceToNow, parseISO } from "date-fns";
-import { Filter, FolderOpen, Search, Tag } from "lucide-react";
+import { Filter, FolderOpen, Search, Tag, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,10 +37,25 @@ function formatDuration(minutes: number) {
 }
 
 export default function TranscriptionsPage() {
-  const { transcriptions } = useDashboardData();
+  const { transcriptions, deleteTranscription } = useDashboardData();
   const { classes } = useClasses();
   const [query, setQuery] = React.useState("");
   const [status, setStatus] = React.useState<"all" | TranscriptionRecordStatus>("all");
+  const [pendingDeleteId, setPendingDeleteId] = React.useState<string | null>(null);
+
+  const handleDelete = React.useCallback(
+    (id: string, title: string) => {
+      const confirmed = window.confirm(`Delete "${title}"? This cannot be undone.`);
+      if (!confirmed) return;
+      setPendingDeleteId(id);
+      try {
+        deleteTranscription(id);
+      } finally {
+        setPendingDeleteId(null);
+      }
+    },
+    [deleteTranscription]
+  );
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -193,12 +208,29 @@ export default function TranscriptionsPage() {
                             {tag}
                           </span>
                         ))}
-                        <span className="ml-auto text-xs">
-                          Updated {formatDistanceToNow(txDate, { addSuffix: true })}
-                        </span>
-                        <Button asChild variant="link" size="sm" className="ml-auto px-0">
-                          <Link href={`/transcriptions/view?id=${tx.id}`}>Open transcript</Link>
-                        </Button>
+                        <div className="ml-auto flex flex-wrap items-center gap-2">
+                          <span className="text-xs">
+                            Updated {formatDistanceToNow(txDate, { addSuffix: true })}
+                          </span>
+                          <Button
+                            asChild
+                            variant="outline"
+                            size="sm"
+                            className="border-primary/40 text-primary hover:bg-primary/10 hover:text-primary hover:border-primary/60"
+                          >
+                            <Link href={`/transcriptions/view?id=${tx.id}`}>Open transcript</Link>
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => handleDelete(tx.id, tx.title)}
+                            disabled={pendingDeleteId === tx.id}
+                          >
+                            <Trash2 className="mr-1 h-4 w-4" />
+                            {pendingDeleteId === tx.id ? "Deleting…" : "Delete"}
+                          </Button>
+                        </div>
                       </div>
                     </article>
                   );

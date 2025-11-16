@@ -183,8 +183,28 @@
   * {
     @apply border-border outline-ring/50;
   }
-  body {
-    @apply bg-background text-foreground;
-    letter-spacing: var(--tracking-normal);
-  }
+body {
+  @apply bg-background text-foreground;
+  letter-spacing: var(--tracking-normal);
+}
+}
+
+.hue-slider [data-slot="slider-track"] {
+  background-image: linear-gradient(
+    90deg,
+    #ff0040 0%,
+    #ff7a00 10%,
+    #ffd500 20%,
+    #a5ff00 30%,
+    #12ffb0 40%,
+    #00c2ff 50%,
+    #006bff 60%,
+    #7a00ff 70%,
+    #ff00d4 80%,
+    #ff0040 100%
+  );
+}
+
+.hue-slider [data-slot="slider-range"] {
+  background: transparent;
 }

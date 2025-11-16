@@ -41,11 +41,6 @@
               <path d="M1 11h12" />
             </svg>
           </button>
-          <button class="icon-btn" id="qa-toggle-btn" title="Toggle Q&A panel (Ctrl + 4)">
-            <svg viewBox="0 0 14 14" aria-hidden="true">
-              <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
-            </svg>
-          </button>
           <button class="icon-btn" id="settings-btn" title="Overlay settings">
             <svg viewBox="0 0 12 12" aria-hidden="true">
               <path
@@ -91,6 +86,7 @@
 
       <main class="overlay-body">
         <div class="overlay-main-content two-column" id="main-content">
+          <div class="primary-column" id="main-column">
           <section class="panel transcript-panel collapsible" id="transcript-panel">
           <header class="panel-header">
             <div class="panel-title">
@@ -138,6 +134,31 @@
             </div>
           </div>
         </section>
+
+        <section class="panel qa-card" id="qa-card">
+          <header class="panel-header">
+            <div class="panel-title">
+              <span>Ask the lecture</span>
+            </div>
+            <span class="qa-hint">Shift + Enter to submit</span>
+          </header>
+          <div class="panel-content">
+            <div class="qa-input-row">
+              <input
+                id="qa-input"
+                class="qa-input"
+                type="text"
+                placeholder="Ask about what was just said..."
+                autocomplete="off"
+              />
+              <button id="qa-btn" class="qa-submit">Ask</button>
+            </div>
+            <div id="qa-results" class="qa-results">
+              <div class="qa-muted">Ask about recent moments to see AI answers and snippets.</div>
+            </div>
+          </div>
+        </section>
+        </div>
 
         <aside class="panel insights-panel collapsible" id="ai-panel">
           <header class="panel-header">
@@ -225,34 +246,6 @@
         </div>
       </section>
 
-      <!-- Floating Q&A Panel -->
-      <section class="panel qa-panel floating-panel" id="qa-panel">
-        <header class="panel-header">
-          <div class="panel-title">
-            <span>Ask the lecture</span>
-            <span class="qa-hint">Shift + Enter to submit</span>
-          </div>
-          <button class="panel-toggle" id="qa-toggle" title="Toggle Q&A panel">
-            <svg viewBox="0 0 14 14" aria-hidden="true">
-              <path d="M7 1v8M7 9l-3-3m3 3l3-3" />
-            </svg>
-          </button>
-        </header>
-        
-        <div class="panel-content">
-          <div class="qa-input-row">
-            <input
-              id="qa-input"
-              class="qa-input"
-              type="text"
-              placeholder="Ask about what was just said..."
-              autocomplete="off"
-            />
-            <button id="qa-btn" class="qa-submit">Ask</button>
-          </div>
-          <div id="qa-results" class="qa-results"></div>
-        </div>
-      </section>
     </div>
 
     <div class="context-menu" id="context-menu">

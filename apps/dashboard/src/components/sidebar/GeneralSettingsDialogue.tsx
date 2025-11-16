@@ -57,6 +57,79 @@ const DEFAULT_SETTINGS: GeneralSettings = {
 const STORAGE_KEY = "app.generalSettings.v1";
 const HEX_COLOR_REGEX = /^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/;
 
+const DEFAULT_HUE = 220;
+
+function normalizeFullHex(value: string): string | null {
+  if (!HEX_COLOR_REGEX.test(value)) return null;
+  if (value.length === 4) {
+    const r = value[1];
+    const g = value[2];
+    const b = value[3];
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return `#${value.slice(1).toLowerCase()}`;
+}
+
+function hexToHue(value: string): number | null {
+  const normalized = normalizeFullHex(value);
+  if (!normalized) return null;
+  const r = parseInt(normalized.slice(1, 3), 16) / 255;
+  const g = parseInt(normalized.slice(3, 5), 16) / 255;
+  const b = parseInt(normalized.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  if (delta === 0) return 0;
+  let hue = 0;
+  switch (max) {
+    case r:
+      hue = ((g - b) / delta) % 6;
+      break;
+    case g:
+      hue = (b - r) / delta + 2;
+      break;
+    default:
+      hue = (r - g) / delta + 4;
+      break;
+  }
+  hue *= 60;
+  if (hue < 0) hue += 360;
+  return Math.round(hue);
+}
+
+function hueToHex(hue: number, saturation = 0.78, lightness = 0.55): string {
+  const normalizedHue = ((hue % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const x = c * (1 - Math.abs(((normalizedHue / 60) % 2) - 1));
+  const m = lightness - c / 2;
+  let r1 = 0, g1 = 0, b1 = 0;
+  if (normalizedHue < 60) {
+    r1 = c;
+    g1 = x;
+  } else if (normalizedHue < 120) {
+    r1 = x;
+    g1 = c;
+  } else if (normalizedHue < 180) {
+    g1 = c;
+    b1 = x;
+  } else if (normalizedHue < 240) {
+    g1 = x;
+    b1 = c;
+  } else if (normalizedHue < 300) {
+    r1 = x;
+    b1 = c;
+  } else {
+    r1 = c;
+    b1 = x;
+  }
+  const toHex = (value: number) => {
+    return Math.round((value + m) * 255)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${toHex(r1)}${toHex(g1)}${toHex(b1)}`;
+}
+
 function loadSettings(): GeneralSettings {
   if (typeof window === "undefined") return DEFAULT_SETTINGS;
   try {
@@ -170,6 +243,20 @@ export default function GeneralSettingsDialog() {
     });
   };
 
+  const accentHue = React.useMemo(() => hexToHue(accentHexValue) ?? DEFAULT_HUE, [accentHexValue]);
+  const accentPreview = React.useMemo(
+    () => (isAccentHexValid ? accentHexValue : hueToHex(accentHue)),
+    [accentHexValue, accentHue, isAccentHexValid]
+  );
+  const handleAccentHueChange = React.useCallback(
+    (values: number[]) => {
+      const hue = values[0] ?? 0;
+      const nextHex = hueToHex(hue);
+      update("accentHex", nextHex);
+    },
+    [update]
+  );
+
   const handleSave = async () => {
     if (!isAccentHexValid) {
       console.warn("Blocked save because accent color is invalid.");
@@ -213,23 +300,27 @@ export default function GeneralSettingsDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-w-2xl p-0" aria-busy={loading}>
+      <DialogContent
+        className="w-[92vw] max-w-3xl max-h-[85vh] p-0 overflow-hidden rounded-2xl"
+        aria-busy={loading}
+      >
         <DialogHeader className="px-6 pt-6">
           <DialogTitle>General Settings</DialogTitle>
           <DialogDescription>Configure appearance, behaviour, and privacy.</DialogDescription>
         </DialogHeader>
 
-        {loading ? (
-          <>
-            <Separator className="my-4" />
-            <SettingsSkeleton />
-          </>
-        ) : (
-          <>
-            <Separator className="my-4" />
+        <div className="settings-scroll-area max-h-[70vh] overflow-y-auto px-6 pb-6">
+          {loading ? (
+            <>
+              <Separator className="my-4" />
+              <SettingsSkeleton />
+            </>
+          ) : (
+            <>
+              <Separator className="my-4" />
 
             {/* Appearance */}
-            <section className="px-6 py-2 space-y-4">
+            <section className="py-2 space-y-4">
               <h3 className="text-sm font-medium text-muted-foreground">Appearance</h3>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -257,20 +348,47 @@ export default function GeneralSettingsDialog() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="accent">Accent colour (HEX)</Label>
-                  <Input
-                    id="accent"
-                    value={settings.accentHex}
-                    onChange={(e) => update("accentHex", e.target.value)}
-                    placeholder="#3b82f6"
-                    pattern="^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$"
-                    title="Enter a valid 3- or 6-digit hex colour (e.g., #3b82f6)"
-                  />
-                  {isAccentHexValid ? (
-                    <p className="text-xs text-muted-foreground">Used for buttons/highlights.</p>
-                  ) : (
-                    <p className="text-xs text-destructive">Enter a valid hex colour such as #3b82f6.</p>
-                  )}
+                  <Label htmlFor="accent">Accent colour</Label>
+                  <div className="space-y-3 rounded-lg border border-border/60 bg-card/60 p-3">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Slider
+                          id="accent-hue"
+                          value={[accentHue]}
+                          min={0}
+                          max={360}
+                          step={1}
+                          onValueChange={handleAccentHueChange}
+                          aria-label="Accent hue"
+                          className="hue-slider flex-1 min-w-[200px]"
+                        />
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>Preview</span>
+                          <span
+                            className="size-8 rounded-md border border-border shadow-sm"
+                            style={{ backgroundColor: accentPreview }}
+                            aria-label="Current accent preview"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <Input
+                          id="accent"
+                          value={settings.accentHex}
+                          onChange={(e) => update("accentHex", e.target.value)}
+                          placeholder="#3b82f6"
+                          pattern="^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$"
+                          title="Enter a valid 3- or 6-digit hex colour (e.g., #3b82f6)"
+                          className="font-mono"
+                        />
+                        {isAccentHexValid ? (
+                          <p className="text-xs text-muted-foreground">Use the slider or enter a HEX value.</p>
+                        ) : (
+                          <p className="text-xs text-destructive">Enter a valid hex colour such as #3b82f6.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-2 md:col-span-2">
@@ -297,7 +415,7 @@ export default function GeneralSettingsDialog() {
             <Separator className="my-4" />
 
             {/* Behaviour */}
-            <section className="px-6 py-2 space-y-4">
+            <section className="py-2 space-y-4">
               <h3 className="text-sm font-medium text-muted-foreground">Behaviour</h3>
 
               <div className="grid gap-4">
@@ -331,7 +449,7 @@ export default function GeneralSettingsDialog() {
             <Separator className="my-4" />
 
             {/* Language & Privacy */}
-            <section className="px-6 pt-2 pb-6 space-y-4">
+            <section className="pt-2 pb-6 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="language">Language</Label>
@@ -383,8 +501,9 @@ export default function GeneralSettingsDialog() {
                 </div>
               </div>
             </section>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

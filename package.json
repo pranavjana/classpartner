@@ -1,6 +1,6 @@
 {
-  "name": "classroom-assistant",
-  "productName": "Classroom Assistant",
+  "name": "classpartner",
+  "productName": "Classpartner",
   "version": "1.0.0",
   "description": "Transparent overlay window for classroom transcription and assistance",
   "main": "src/index.js",
@@ -12,7 +12,8 @@
     "lint": "echo \"No linting configured\"",
     "desktop:dev": "concurrently -k \"npm --prefix apps/dashboard run dev -- -p 3001\" \"wait-on http://localhost:3001 && cross-env RENDERER_URL=http://localhost:3001 electron-forge start\"",
     "build:web": "npm --prefix apps/dashboard run build",
-    "desktop:make": "npm run build:web && electron-forge make"
+    "desktop:make": "npm run build:web && electron-forge make",
+    "desktop:make:win": "npm run build:web && electron-forge make --platform win32"
   },
   "keywords": [],
   "author": {

@@ -1,6 +1,7 @@
 // src/index.js
-const { app, BrowserWindow, ipcMain, screen, globalShortcut, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, globalShortcut, shell, nativeImage, protocol } = require('electron');
 const path = require('node:path');
+const fs = require('node:fs');
 const crypto = require('node:crypto');
 const Store = require('electron-store');
 require('dotenv').config();
@@ -10,9 +11,43 @@ const { AIPipeline } = require('../src/services/ai/pipeline');          // ⬅ a
 const TranscriptStorage = require('../src/services/transcriptStorage'); // NEW: SQLite storage
 
 const store = new Store();
+
+function getTransparencyPercent() {
+  const general = store.get('generalSettings') || {};
+  const raw = typeof general.transparency === 'number' ? general.transparency : 0;
+  const clamped = Math.max(0, Math.min(100, raw));
+  return clamped;
+}
+
+function getOverlayTargetOpacity() {
+  const percent = getTransparencyPercent();
+  const opacity = 1 - percent / 100;
+  return Math.max(0, Math.min(1, opacity));
+}
+
+function applyOverlayTransparency() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const opacity = getOverlayTargetOpacity();
+  overlayWindow.setOpacity(opacity);
+}
 const MODEL_CONTEXT_KEY = 'modelContext';
 const isDev = !app.isPackaged;
 const PRELOAD = path.join(__dirname, 'preload.js');
+
+// Register custom protocol as privileged (must be done before app is ready)
+if (!isDev) {
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: 'app',
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+      },
+    },
+  ]);
+}
 
 
 let overlayWindow = null;    // frameless always-on-top widget
@@ -243,9 +278,8 @@ function createDashboardWindow() {
   if (isDev && (process.env.RENDERER_URL || '').startsWith('http')) {
     dashboardWindow.loadURL(process.env.RENDERER_URL); // http://localhost:3001
   } else {
-    // PRODUCTION: load exported dashboard
-    const indexFile = path.join(__dirname, '..', 'apps', 'dashboard', 'out', 'index.html');
-    dashboardWindow.loadFile(indexFile);
+    // PRODUCTION: load exported dashboard using custom protocol
+    dashboardWindow.loadURL('app://./index.html');
   }
 
   dashboardWindow.once('ready-to-show', () => dashboardWindow.show());
@@ -294,12 +328,17 @@ function createOverlayWindow() {
   overlayWindow.on('unmaximize', () => overlayWindow?.webContents.send('window:maximize-changed', false));
   overlayWindow.once('ready-to-show', () => {
     overlayWindow.show();
+    const targetOpacity = getOverlayTargetOpacity();
+    if (targetOpacity <= 0) {
+      overlayWindow.setOpacity(0);
+      return;
+    }
     overlayWindow.setOpacity(0);
     let opacity = 0;
     const fadeIn = setInterval(() => {
-      opacity += 0.1;
+      opacity = Math.min(targetOpacity, opacity + 0.1);
       overlayWindow.setOpacity(opacity);
-      if (opacity >= 1) clearInterval(fadeIn);
+      if (opacity >= targetOpacity) clearInterval(fadeIn);
     }, 30);
   });
   overlayWindow.on('closed', () => { overlayWindow = null; });
@@ -571,6 +610,9 @@ function setupIpcHandlers() {
     Object.keys(settings).forEach((k) => store.set(k, settings[k]));
     const snapshot = store.store;
     sendToAll('settings:updated', snapshot);
+    if (settings?.generalSettings) {
+      applyOverlayTransparency();
+    }
     return snapshot;
   });
 
@@ -791,27 +833,32 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ai:selftest', async () => {
+  ipcMain.handle('ai:selftest', async (_evt, payload = {}) => {
     if (!aiPipeline) return { success: false, error: 'aiPipeline not ready' };
-    const segs = [
-      {
-        id: 't1',
-        text: 'The lecturer outlined the team project timeline and highlighted safety checks needed before lab work.',
-        startMs: 0,
-        endMs: 3000,
-      },
-      {
-        id: 't2',
-        text: 'We reviewed the reference sheet from the uploaded briefing and clarified expectations for the midterm summary.',
-        startMs: 3000,
-        endMs: 6000,
-      },
-    ];
+    const segments = Array.isArray(payload?.segments)
+      ? payload.segments
+      : Array.isArray(payload)
+        ? payload
+        : [];
+    if (!segments.length) {
+      return { success: false, error: 'No segments provided for AI self-test' };
+    }
+    const validSegments = segments.filter(
+      (seg) =>
+        seg &&
+        typeof seg.text === 'string' &&
+        seg.text.trim().length > 0 &&
+        typeof seg.startMs === 'number' &&
+        typeof seg.endMs === 'number'
+    );
+    if (!validSegments.length) {
+      return { success: false, error: 'Provided segments missing text/start/end timestamps' };
+    }
     let gotUpdate = false, gotError = null;
     const onU = () => { gotUpdate = true; };
     const onE = (e) => { gotError = e; };
     aiPipeline.on('update', onU); aiPipeline.on('error', onE);
-    segs.forEach(s => aiPipeline.enqueueSegment(s));
+    validSegments.forEach(s => aiPipeline.enqueueSegment(s));
     await new Promise(r => setTimeout(r, 5000));
     aiPipeline.off('update', onU); aiPipeline.off('error', onE);
     if (gotError) return { success: false, error: String(gotError?.message ?? gotError) };
@@ -1262,6 +1309,85 @@ function setupIpcHandlers() {
 
 // ---------- app lifecycle
 app.whenReady().then(() => {
+  // Set dock icon on macOS
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      const iconPath = path.join(__dirname, '..', 'assets', 'CLASSPARTNER.png');
+      const icon = nativeImage.createFromPath(iconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+      }
+    } catch (err) {
+      console.warn('[Dock Icon] Failed to set dock icon:', err);
+    }
+  }
+
+  // Register custom protocol for serving static Next.js files in production
+  if (!isDev) {
+    protocol.handle('app', (request) => {
+      const outDir = path.join(__dirname, '..', 'apps', 'dashboard', 'out');
+      let urlPath = new URL(request.url).pathname;
+
+      // Handle root path
+      if (urlPath === '/' || urlPath === '') {
+        return new Response(fs.readFileSync(path.join(outDir, 'index.html')), {
+          headers: { 'Content-Type': 'text/html' },
+        });
+      }
+
+      // Remove leading slash
+      urlPath = urlPath.replace(/^\//, '');
+
+      // Determine the actual file path
+      let filePath = path.join(outDir, urlPath);
+
+      // If it's a directory request (no extension), serve index.html
+      if (!path.extname(urlPath)) {
+        const indexPath = path.join(filePath, 'index.html');
+        if (fs.existsSync(indexPath)) {
+          filePath = indexPath;
+        } else {
+          // Try with .html extension
+          const htmlPath = filePath + '.html';
+          if (fs.existsSync(htmlPath)) {
+            filePath = htmlPath;
+          }
+        }
+      }
+
+      // Determine content type
+      const ext = path.extname(filePath).toLowerCase();
+      const mimeTypes = {
+        '.html': 'text/html',
+        '.js': 'text/javascript',
+        '.css': 'text/css',
+        '.json': 'application/json',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.svg': 'image/svg+xml',
+        '.ico': 'image/x-icon',
+        '.woff': 'font/woff',
+        '.woff2': 'font/woff2',
+        '.ttf': 'font/ttf',
+        '.txt': 'text/plain',
+      };
+
+      const contentType = mimeTypes[ext] || 'application/octet-stream';
+
+      try {
+        const data = fs.readFileSync(filePath);
+        return new Response(data, {
+          headers: { 'Content-Type': contentType },
+        });
+      } catch (err) {
+        console.error('[Protocol] Failed to serve:', filePath, err);
+        return new Response('Not Found', { status: 404 });
+      }
+    });
+  }
+
   setupIpcHandlers();
   createDashboardWindow();                   // show Dashboard on start
 

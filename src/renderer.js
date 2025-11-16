@@ -43,6 +43,7 @@ let lostStatusEl = null;
 const appearanceState = {
   theme: 'system',
   accentHex: '#6366f1',
+  transparency: 0,
 };
 
 function normalizeHex(value) {
@@ -85,6 +86,25 @@ function applyAccentColor(accent) {
   appearanceState.accentHex = normalized;
 }
 
+function applyTransparencySetting(value) {
+  if (typeof document === 'undefined') return;
+  const percent = Math.max(0, Math.min(100, Number(value) || 0));
+  const normalized = 1 - percent / 100;
+  const clamp = (min, max, val) => Math.min(max, Math.max(min, val));
+  const surface = clamp(0.14, 0.96 - 0.82 * (percent / 100), 0.96);
+  const muted = clamp(0.08, surface - 0.05, 0.9);
+  const background = clamp(0.04, surface - 0.12, 0.86);
+  const hover = clamp(0.02, 0.02 + 0.06 * normalized, 0.08);
+  const hoverStrong = clamp(0.03, 0.04 + 0.08 * normalized, 0.12);
+  const root = document.documentElement;
+  root.style.setProperty('--cp-surface-opacity', surface.toFixed(3));
+  root.style.setProperty('--cp-surface-muted-opacity', muted.toFixed(3));
+  root.style.setProperty('--cp-background-opacity', background.toFixed(3));
+  root.style.setProperty('--cp-hover-opacity', hover.toFixed(3));
+  root.style.setProperty('--cp-hover-strong-opacity', hoverStrong.toFixed(3));
+  appearanceState.transparency = percent;
+}
+
 function applyThemeSetting(theme) {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
@@ -112,6 +132,9 @@ async function initializeAppearance() {
       if (typeof general.accentHex === 'string') {
         applyAccentColor(general.accentHex);
       }
+      if (typeof general.transparency === 'number') {
+        applyTransparencySetting(general.transparency);
+      }
     }
   } catch (error) {
     console.warn('[Overlay] Failed to apply appearance settings:', error);
@@ -128,6 +151,12 @@ async function initializeAppearance() {
       normalizeHex(general.accentHex) !== appearanceState.accentHex
     ) {
       applyAccentColor(general.accentHex);
+    }
+    if (
+      typeof general.transparency === 'number' &&
+      general.transparency !== appearanceState.transparency
+    ) {
+      applyTransparencySetting(general.transparency);
     }
   });
 }
@@ -148,7 +177,11 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeLostPanelToggle();
   initializePanelToggles();
   initializeResponsiveLayout();
-  initializeQAPanel();
+  setupQnABox();
+
+  window.ai?.onLog?.((m) => console.log('[ai log]', m));
+  window.ai?.onError?.((e) => console.warn('[ai error]', e));
+  window.ai?.onUpdate?.((p) => console.log('[ai update]', p));
 });
 
 function initializeWindowControls() {
@@ -1199,9 +1232,6 @@ function setupQnABox() {
     busy = true;
     out.innerHTML = `<div class="qa-muted">Asking...</div>`;
     
-    // Show Q&A panel when asking
-    showQAPanel();
-    
     try {
       const res = await window.api.invoke('ai:query', { query: q, opts: { k: 6, mode } });
       renderQAResult(out, res);
@@ -1671,48 +1701,9 @@ function stripJsonPayload(text) {
 }
 
 async function persistLostRecap(marker, structured, rawText, excerpt) {
-  if (!window.transcriptStorage?.saveTranscription) return;
-  if (!marker.sessionId) return;
-
-  const classes = await loadClassesOnce();
-  const classInfo = marker.classId ? classes[marker.classId] : null;
-
-  const summaryText = Array.isArray(structured?.summary)
-    ? structured.summary.join(' ')
-    : undefined;
-
-  const payload = {
-    id: marker.savedRecordId || `lostrecap_${marker.sessionId}_${Math.round(marker.markerMs)}`,
-    sessionId: marker.sessionId,
-    classId: marker.classId,
-    title: `${classInfo?.code || 'Lost recap'} • ${formatClock(marker.markerMs)}`,
-    createdAt: marker.flaggedAt,
-    durationMinutes: 0,
-    wordCount: 0,
-    status: 'note',
-    summary: summaryText?.slice(0, 280) || `Recap at ${formatClock(marker.markerMs)}`,
-    content: JSON.stringify({
-      type: 'lost-recap',
-      markerMs: marker.markerMs,
-      flaggedAt: marker.flaggedAt,
-      excerpt,
-      structured,
-      raw: rawText,
-    }),
-    tags: ['lost-recap'],
-    flagged: 0,
-  };
-
-  try {
-    const response = await window.transcriptStorage.saveTranscription(payload);
-    if (response?.success && response.record) {
-      marker.savedRecordId = response.record.id || payload.id;
-    } else {
-      marker.savedRecordId = payload.id;
-    }
-  } catch (error) {
-    console.warn('[LostRecap] Failed to persist recap note', error);
-  }
+  // No longer persist lost recaps as separate transcription records
+  // The recap is displayed in the overlay panel only
+  marker.savedRecordId = `lostrecap_${marker.sessionId}_${Math.round(marker.markerMs)}`;
 }
 
 function renderLostTimeline() {
@@ -2177,84 +2168,7 @@ function togglePanelById(panelId) {
         panel.classList.add('visible');
         panel.style.display = 'block';
       }
-    } else if (panelId === 'qa-panel') {
-      toggleQAPanel();
     }
-  }
-}
-
-// Initialize Q&A panel functionality
-function initializeQAPanel() {
-  const qaToggleBtn = document.getElementById('qa-toggle-btn');
-  const qaPanel = document.getElementById('qa-panel');
-  const qaToggle = document.getElementById('qa-toggle');
-  
-  if (qaToggleBtn && qaPanel) {
-    qaToggleBtn.addEventListener('click', () => {
-      toggleQAPanel();
-    });
-  }
-  
-  if (qaToggle && qaPanel) {
-    qaToggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleQAPanel();
-    });
-  }
-  
-  // Auto-show Q&A panel when there are results
-  const qaResults = document.getElementById('qa-results');
-  if (qaResults) {
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === 'childNodes' && qaResults.children.length > 0) {
-          const hasContent = Array.from(qaResults.children).some(child => 
-            child.textContent.trim() && !child.textContent.includes('Asking...')
-          );
-          if (hasContent && !qaPanel.classList.contains('visible')) {
-            showQAPanel();
-          }
-        }
-      });
-    });
-    
-    observer.observe(qaResults, { childList: true, subtree: true });
-  }
-}
-
-// Toggle Q&A panel visibility
-function toggleQAPanel() {
-  const qaPanel = document.getElementById('qa-panel');
-  if (!qaPanel) return;
-  
-  const isVisible = qaPanel.classList.contains('visible');
-  if (isVisible) {
-    hideQAPanel();
-  } else {
-    showQAPanel();
-  }
-}
-
-// Show Q&A panel
-function showQAPanel() {
-  const qaPanel = document.getElementById('qa-panel');
-  if (qaPanel) {
-    qaPanel.classList.add('visible');
-    qaPanel.style.display = 'block';
-    // Focus on input when panel opens
-    const qaInput = document.getElementById('qa-input');
-    if (qaInput) {
-      setTimeout(() => qaInput.focus(), 100);
-    }
-  }
-}
-
-// Hide Q&A panel
-function hideQAPanel() {
-  const qaPanel = document.getElementById('qa-panel');
-  if (qaPanel) {
-    qaPanel.classList.remove('visible');
-    qaPanel.style.display = 'none';
   }
 }
 
@@ -2376,12 +2290,3 @@ function promptFormatSelection() {
     });
   });
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-  setupQnABox();
-
-  // Optional: see AI worker traffic while testing
-  window.ai?.onLog?.(m => console.log('[ai log]', m));
-  window.ai?.onError?.(e => console.warn('[ai error]', e));
-  window.ai?.onUpdate?.(p => console.log('[ai update]', p));
-});
