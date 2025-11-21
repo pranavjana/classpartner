@@ -101,11 +101,6 @@ export default function DashboardHeader({
             transform: state === "collapsed" ? "translateX(calc(-8rem + 3.5rem))" : "translateX(0)",
           }}
         >
-          <Button onClick={launch} className="rounded-full" disabled={launching} aria-busy={launching}>
-            <Mic className="w-4 h-4 mr-2" />
-            {launching ? "Starting…" : "New Transcription"}
-          </Button>
-
           <div className="flex-1">
             <div className="relative w-full max-w-md" ref={searchRef}>
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />

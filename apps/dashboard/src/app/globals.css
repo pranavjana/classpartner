@@ -3,6 +3,39 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Work Sans Font */
+@font-face {
+  font-family: 'Work Sans';
+  src: url('/fonts/WorkSans-Light.woff2') format('woff2');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Work Sans';
+  src: url('/fonts/WorkSans-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Work Sans';
+  src: url('/fonts/WorkSans-SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Work Sans';
+  src: url('/fonts/WorkSans-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -207,4 +240,26 @@ body {
 
 .hue-slider [data-slot="slider-range"] {
   background: transparent;
+}
+
+/* Gradient button with blurred border */
+.hero-gradient-button .blurred-border {
+  border-radius: 9999px;
+}
+
+.blurred-border {
+  opacity: 0.45;
+  z-index: 2;
+  background: linear-gradient(176.87deg, rgba(255, 255, 255, 0.5) 8.56%, rgba(255, 255, 255, 0) 85.04%);
+  border-radius: 9999px;
+  padding: 3px;
+  -webkit-mask-image: linear-gradient(#fff 0 0), linear-gradient(#fff 0 0);
+  -webkit-mask-position: 0 0, 0 0;
+  -webkit-mask-size: auto, auto;
+  -webkit-mask-repeat: repeat, repeat;
+  -webkit-mask-clip: content-box, border-box;
+  -webkit-mask-origin: content-box, border-box;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  overflow: hidden;
 }
